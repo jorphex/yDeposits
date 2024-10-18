@@ -17,7 +17,7 @@ Developed as an internal support tool for the Yearn Finance ecosystem, the bot a
 
 ### Example
 Input:  
-0x92545bCE636E6eE91D88D2D017182cD0bd2fC22e 20871164`
+0x92545bCE636E6eE91D88D2D017182cD0bd2fC22e 20871164
 
 Response:  
 Vault: `DAI-2 yVault (yvDAI-2)`  
