@@ -1,7 +1,7 @@
 ydeposits
 - daily report of:
   - all vaults to check for pps reduction (anomalies)
-  - highest apr vaults
+  - ~~highest apr vaults~~ _done_
   - top apr gainers/losers, 5 each
 - compare two vaults (contract1 contract 2 time)
 - add tvl bar graph in graph generation (yvault total supply x pps x price)
