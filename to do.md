@@ -1,5 +1,5 @@
 ydeposits
-- ~~daily report of:~~ _all done_
+- ~~daily report of:~~ _all three done_
   - ~~all vaults to check for pps reduction (anomalies)~~ _done_
   - ~~highest apr vaults~~ _done_
   - ~~top apr gainers/losers, 5 each~~ _done, 10 each_
