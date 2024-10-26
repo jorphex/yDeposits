@@ -1,4 +1,3 @@
-import sys
 import re
 import requests
 import matplotlib.pyplot as plt
@@ -15,8 +14,6 @@ from datetime import datetime, timedelta
 import time
 import math
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
-sys.stdout = sys.stderr
 
 chain_providers = {
     'ethereum': 'https://eth-mainnet.g.alchemy.com/v2/RPC_API_KEY_HERE',
