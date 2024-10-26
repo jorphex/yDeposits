@@ -9,11 +9,12 @@ from io import BytesIO
 from web3 import Web3
 from web3.middleware import geth_poa_middleware
 from telegram import Update, InputFile
-from telegram.ext import Application, MessageHandler, filters, CallbackContext
+from telegram.ext import Application, MessageHandler, filters, CallbackContext, CommandHandler
 from telegram.error import NetworkError
 from datetime import datetime, timedelta
 import time
 import math
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 sys.stdout = sys.stderr
 
@@ -26,6 +27,7 @@ chain_providers = {
 }
 
 TOKEN = 'BOT_TOKEN_HERE'
+YOUR_CHAT_ID = 'TELEGRAM_CHAT_ID_HERE'
 
 def create_web3_instance(provider, chain):
     web3 = Web3(Web3.HTTPProvider(provider))
@@ -654,9 +656,321 @@ async def process_data_for_apr(sampled_dates, timestamp_to_price, decimals):
 
     return prices_filtered, timestamps_filtered, aprs
 
+async def fetch_all_vaults_kong():
+    url = "https://kong.yearn.farm/api/gql"
+    query = """
+    query {
+      vaults {
+        chainId
+        address
+        name
+        symbol
+        decimals
+      }
+    }
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json={"query": query}) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    vaults = data.get("data", {}).get("vaults", [])
+                    if not vaults:
+                        print("No vaults found in response from Kong.")
+                    else:
+                        print(f"Fetched {len(vaults)} vaults from Kong.")
+                    return vaults
+                else:
+                    print(f"Error fetching data from Kong: {response.status}")
+                    return None
+    except Exception as e:
+        print(f"Exception while fetching data from Kong: {str(e)}")
+        return None
+
+async def fetch_with_retries(vault, retries=3):
+    for attempt in range(retries):
+        try:
+            if 'address' in vault and vault['address']:
+                # print(f"Fetching timeseries for vault: {vault['address']}")
+                timeseries = await fetch_historical_pricepershare_kong(vault['address'], vault['chainId'])
+                if timeseries is not None:
+                    for entry in timeseries:
+                        entry['time'] = int(entry['time'])
+                    return timeseries
+        except Exception as e:
+            print(f"Error fetching timeseries for vault {vault.get('address', 'Unknown')}: {e}")
+        await asyncio.sleep(2 ** attempt)
+    return None
+
+def calculate_apr(timeseries):
+    if len(timeseries) < 7:
+        print("Not enough timeseries data to calculate APR")
+        return 0
+    past_pps = timeseries[-7]['value']
+    current_pps = timeseries[-1]['value']
+    if past_pps == 0:
+        # print("Past PPS is zero, cannot calculate APR")
+        return 0
+    apr = ((current_pps - past_pps) / past_pps) * (365 / 7) * 100
+    return apr
+
+def interpolate_apy(apr):
+    if apr == 0:
+        return 0
+    apy = ((1 + (apr / 100) * (7 / 365)) ** (365 / 7) - 1) * 100
+    return apy
+
+def calculate_apr_from_pps(current_pps, past_pps):
+    if past_pps == 0:
+        return 0
+    apr = ((current_pps - past_pps) / past_pps) * (365 / 7) * 100
+    return apr
+
+async def daily_apr_report(context: CallbackContext = None, chat_id: int = None):
+    global application
+    if not context:
+        context = CallbackContext(application=application)
+
+    try:
+        print("Starting daily APR report generation")
+        # Step 1: Fetch all vaults
+        vaults = None
+        for attempt in range(5):
+            try:
+                vaults = await fetch_all_vaults_kong()
+                if vaults:
+                    break
+            except Exception as e:
+                print(f"Error fetching vault details from Kong (attempt {attempt + 1}): {e}")
+            await asyncio.sleep(2 ** attempt)
+
+        if not vaults:
+            print("No vaults found or vaults response is None")
+            if context and chat_id:
+                await context.bot.send_message(chat_id=chat_id, text="No vaults found. Aborting APR report generation.")
+            return
+
+        valid_vaults = []
+        for vault in vaults:
+            if vault and 'address' in vault and 'decimals' in vault:
+                try:
+                    vault['decimals'] = int(vault['decimals'])
+                    valid_vaults.append(vault)
+                except ValueError as e:
+                    print(f"Error converting decimals for vault {vault.get('address', 'Unknown')}: {e}")
+
+        total_vaults = len(valid_vaults)
+        # print(f"Total valid vaults after filtering: {total_vaults}")
+        # if context and chat_id:
+        #    await context.bot.send_message(chat_id=chat_id, text=f"{total_vaults} vaults found. Starting processing...")
+
+        # Step 2: Process timeseries data for each vault in batches of 100
+        batch_size = 50
+        apr_data = []
+        timeseries_data = {}  # Dictionary to store timeseries data for reuse
+        for i in range(0, len(valid_vaults), batch_size):
+            batch = valid_vaults[i:i + batch_size]
+            # print(f"Processing batch {i // batch_size + 1} with {len(batch)} vaults")
+            tasks = [fetch_with_retries(vault) for vault in batch]
+            batch_results = await asyncio.gather(*tasks)
+
+            # Step 3: Store timeseries data for reuse and calculate APR for each vault in the batch
+            for vault, timeseries in zip(batch, batch_results):
+                if timeseries is not None:
+                    timeseries_data[vault['address']] = timeseries  # Store timeseries data
+                    apr = calculate_apr(timeseries)
+                    apy = interpolate_apy(apr)
+                    apr_data.append({
+                        'vault': vault,
+                        'apr': apr,
+                        'apy': apy
+                    })
+                else:
+                    print(f"Failed to fetch timeseries for vault: {vault['address']}")
+
+            # Step 4: Send progress report after each batch
+            # progress_message = f"Completed processing {min(i + batch_size, total_vaults)} out of {total_vaults} vaults"
+            # print(progress_message)
+            # if context and chat_id:
+            #    await context.bot.send_message(chat_id=chat_id, text=progress_message)
+
+            # Add delay between batches
+            await asyncio.sleep(1)
+
+        # Step 5: Sort and get top 20 APR vaults
+        if not apr_data:
+            print("No APR data available after processing all batches.")
+            if context and chat_id:
+                await context.bot.send_message(chat_id=chat_id, text="No valid APR data found. Report generation aborted.")
+            return
+
+        top_20_vaults = sorted(apr_data, key=lambda x: x['apr'], reverse=True)[:20]
+
+        # Step 6: Format the Telegram report
+        message = "Top 20 Vaults by 7-Day APR:\n"
+        for idx, vault_data in enumerate(top_20_vaults, start=1):
+            vault = vault_data['vault']
+            apr = vault_data['apr']
+            apy = vault_data['apy']
+            link = f"https://yearn.fi/v3/{vault['chainId']}/{vault['address']}"
+            message += (f"{idx}. **[{clean_string(vault['name'])}]({link})**\n"
+                       f"   📋 Address: `{vault['address']}`\n"
+                       f"   📊 APR: `{apr:.2f}%` | APY: `{apy:.2f}%`\n\n")
+
+        # Step 7: Send the message to your chat ID
+        if context and chat_id:
+            await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown', disable_web_page_preview=True)
+
+        # Step 8: Call PPS Reduction Check using the same timeseries data
+        await check_pps_reduction(context=context, chat_id=chat_id, timeseries_data=timeseries_data)
+
+        # Step 9: Call Top Gainers and Losers report using the same timeseries data
+        await top_gainers_losers_report(context=context, chat_id=chat_id, timeseries_data=timeseries_data, valid_vaults=valid_vaults if valid_vaults else [])
+
+        # Step 10: Clear timeseries data after use
+        timeseries_data.clear()
+
+    except Exception as e:
+        print(f"Error generating daily APR report: {e}")
+
+async def check_pps_reduction(context: CallbackContext = None, chat_id: int = None, timeseries_data: dict = None):
+    try:
+        print("Starting PPS reduction check (anomalies report)")
+        if not timeseries_data:
+            print("No timeseries data available for PPS reduction check.")
+            if context and chat_id:
+                await context.bot.send_message(chat_id=chat_id, text="No timeseries data found. Aborting PPS reduction check.")
+            return
+
+        # Step 1: Check PPS reduction
+        anomalies = []
+        for vault_address, timeseries in timeseries_data.items():
+            if timeseries and len(timeseries) >= 2:
+                latest_pps = timeseries[-1]['value']
+                previous_pps = timeseries[-2]['value']
+                if latest_pps < previous_pps:
+                    reduction_percentage = ((previous_pps - latest_pps) / previous_pps) * 100
+                    anomalies.append({
+                        'vault_address': vault_address,
+                        'latest_pps': latest_pps,
+                        'previous_pps': previous_pps,
+                        'reduction_percentage': reduction_percentage
+                    })
+
+        # Step 2: Format the Telegram report
+        if anomalies:
+            message = "⚠️ PPS Reduction Detected (Anomalies Report):\n"
+            for anomaly in anomalies:
+                vault_address = anomaly['vault_address']
+                message += (f"- Address: `{vault_address}`\n"
+                           f"  Latest PPS: `{anomaly['latest_pps']}`\n"
+                           f"  Previous PPS: `{anomaly['previous_pps']}`\n"
+                           f"  Reduction: `{anomaly['reduction_percentage']:.2f}%`\n\n")
+        else:
+            message = "✔️ No anomalies found in PPS for any vaults."
+
+        # Step 3: Send the message to your chat ID
+        if context and chat_id:
+            await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown', disable_web_page_preview=True)
+    except Exception as e:
+        print(f"Error generating PPS reduction report: {e}")
+
+async def top_gainers_losers_report(context: CallbackContext = None, chat_id: int = None, timeseries_data: dict = None, valid_vaults: list = None):
+    try:
+        print("Starting Top Gainers and Losers Report")
+        if not timeseries_data:
+            print("No timeseries data available for gainers and losers report.")
+            if context and chat_id:
+                await context.bot.send_message(chat_id=chat_id, text="No timeseries data found. Aborting gainers and losers report.")
+            return
+
+        if not valid_vaults or len(valid_vaults) == 0:
+            print("No valid vaults provided for gainers and losers report.")
+            if context and chat_id:
+                await context.bot.send_message(chat_id=chat_id, text="No valid vaults found. Aborting gainers and losers report.")
+            return
+
+        apr_changes = []
+        for vault_address, timeseries in timeseries_data.items():
+            if timeseries and len(timeseries) >= 8:
+                # Step 1: Calculate today's APR
+                latest_pps = timeseries[-1]['value']
+                pps_7_days_ago = timeseries[-8]['value']
+                apr_today = calculate_apr_from_pps(latest_pps, pps_7_days_ago)
+
+                # Step 2: Calculate yesterday's APR
+                pps_yesterday = timeseries[-2]['value']
+                pps_7_days_before_yesterday = timeseries[-9]['value']
+                apr_yesterday = calculate_apr_from_pps(pps_yesterday, pps_7_days_before_yesterday)
+
+                # Step 3: Calculate APR change
+                apr_change = apr_today - apr_yesterday
+                apy_today = interpolate_apy(apr_today)
+                apr_changes.append({
+                    'vault_address': vault_address,
+                    'apr_change': apr_change,
+                    'apr_today': apr_today,
+                    'apy_today': apy_today,
+                    'apr_yesterday': apr_yesterday
+                })
+
+        # Step 4: Sort APR changes
+        top_gainers = sorted(apr_changes, key=lambda x: x['apr_change'], reverse=True)[:5]
+        top_losers = sorted(apr_changes, key=lambda x: x['apr_change'])[:5]
+
+        # Step 5: Format the Telegram report for gainers and losers
+        message = "🟢 Top 5 APR Gainers:\n"
+        for idx, vault_data in enumerate(top_gainers, start=1):
+            vault_address = vault_data['vault_address']
+            vault_info = next(vault for vault in valid_vaults if vault['address'] == vault_address)
+            chain_id = vault_info['chainId']
+            name = vault_info['name']
+            symbol = vault_info['symbol']
+            link = f"https://yearn.fi/v3/{chain_id}/{vault_address}"
+            message += (f"{idx}. **[{clean_string(name)}]({link})**\n"
+                       f"   📋 Address: `{vault_address}`\n"
+                       f"   🔼 APR Change: `{vault_data['apr_change']:.2f}%`\n"
+                       f"   📊 APR Today: `{vault_data['apr_today']:.2f}%` | APY: `{vault_data['apy_today']:.2f}%`\n"
+                       f"   📈 APR Yesterday: `{vault_data['apr_yesterday']:.2f}%` | APY Yesterday: `{interpolate_apy(vault_data['apr_yesterday']):.2f}%`\n\n")
+
+        message += "🔴 Top 5 APR Losers:\n"
+        for idx, vault_data in enumerate(top_losers, start=1):
+            vault_address = vault_data['vault_address']
+            vault_info = next(vault for vault in valid_vaults if vault['address'] == vault_address)
+            chain_id = vault_info['chainId']
+            name = vault_info['name']
+            symbol = vault_info['symbol']
+            link = f"https://yearn.fi/v3/{chain_id}/{vault_address}"
+            message += (f"{idx}. **[{clean_string(name)}]({link})**\n"
+                       f"   📋 Address: `{vault_address}`\n"
+                       f"   🔽 APR Change: `{vault_data['apr_change']:.2f}%`\n"
+                       f"   📊 APR Today: `{vault_data['apr_today']:.2f}%` | APY: `{vault_data['apy_today']:.2f}%`\n"
+                       f"   📉 APR Yesterday: `{vault_data['apr_yesterday']:.2f}%` | APY Yesterday: `{interpolate_apy(vault_data['apr_yesterday']):.2f}%`\n\n")
+
+        # Step 6: Send the report to your chat ID
+        if context and chat_id:
+            await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown', disable_web_page_preview=True)
+    except Exception as e:
+        print(f"Error generating Top Gainers and Losers report: {e}")
+
+async def manual_report_trigger(update, context: CallbackContext):
+    # print("Manual APR report trigger invoked")
+    chat_id = update.effective_chat.id
+    # await update.message.reply_text("Generating daily APR report...")
+    await daily_apr_report(context=context, chat_id=chat_id)
+
 def main():
+    global application
     application = Application.builder().token(TOKEN).build()
+
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(CommandHandler("daily_apr_report", manual_report_trigger))
+
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(daily_apr_report, 'cron', hour=0, minute=0, kwargs={'chat_id': YOUR_CHAT_ID})  # 0000 UTC daily
+    scheduler.start()
+
+    print("Starting the bot...")
     application.run_polling()
 
 if __name__ == '__main__':
