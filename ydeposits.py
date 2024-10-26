@@ -765,7 +765,7 @@ async def daily_apr_report(context: CallbackContext = None, chat_id: int = None)
         #    await context.bot.send_message(chat_id=chat_id, text=f"{total_vaults} vaults found. Starting processing...")
 
         # Step 2: Process timeseries data for each vault in batches of 100
-        batch_size = 50
+        batch_size = 2000  # Check Kong response for errors and rate limits before bumping up batch size. Start from 50-100
         apr_data = []
         timeseries_data = {}  # Dictionary to store timeseries data for reuse
         for i in range(0, len(valid_vaults), batch_size):
@@ -919,7 +919,7 @@ async def top_gainers_losers_report(context: CallbackContext = None, chat_id: in
         top_losers = sorted(apr_changes, key=lambda x: x['apr_change'])[:5]
 
         # Step 5: Format the Telegram report for gainers and losers
-        message = "🟢 Top 5 APR Gainers:\n"
+        message = "🟢 Top 5 7-day APR Gainers:\n"
         for idx, vault_data in enumerate(top_gainers, start=1):
             vault_address = vault_data['vault_address']
             vault_info = next(vault for vault in valid_vaults if vault['address'] == vault_address)
@@ -933,7 +933,7 @@ async def top_gainers_losers_report(context: CallbackContext = None, chat_id: in
                        f"   📊 APR Today: `{vault_data['apr_today']:.2f}%` | APY: `{vault_data['apy_today']:.2f}%`\n"
                        f"   📈 APR Yesterday: `{vault_data['apr_yesterday']:.2f}%` | APY Yesterday: `{interpolate_apy(vault_data['apr_yesterday']):.2f}%`\n\n")
 
-        message += "🔴 Top 5 APR Losers:\n"
+        message += "🔴 Top 5 7-day APR Losers:\n"
         for idx, vault_data in enumerate(top_losers, start=1):
             vault_address = vault_data['vault_address']
             vault_info = next(vault for vault in valid_vaults if vault['address'] == vault_address)
