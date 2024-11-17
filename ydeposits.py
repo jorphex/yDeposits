@@ -57,6 +57,11 @@ async def fetch_vault_details_kong(vault_address):
         name
         symbol
         decimals
+        v3
+        apiVersion
+        tvl {
+          close
+        }
       }
     }
     """
@@ -70,15 +75,15 @@ async def fetch_vault_details_kong(vault_address):
                     for vault in vaults:
                         if vault['address'].lower() == vault_address.lower():
                             response_time = time.time() - start_time
-
-                            return vault['chainId'], vault['name'], vault['symbol'], int(vault['decimals'])  
-                    return None, None, None, None
+                            tvl = vault.get('tvl', {}).get('close', 0)
+                            return vault['chainId'], vault['name'], vault['symbol'], int(vault['decimals']), vault.get('v3', False), vault.get('apiVersion', 'N/A'), tvl
+                    return None, None, None, None, None, None, None
                 else:
                     print(f"Error fetching data from Kong: {response.status}")
-                    return None, None, None, None
+                    return None, None, None, None, None, None, None
     except Exception as e:
         print(f"Exception while fetching data from Kong: {str(e)}")
-        return None, None, None, None
+        return None, None, None, None, None, None, None
 
 async def fetch_historical_pricepershare_kong(vault_address, chain_id, limit=1000):
     url = "https://kong.yearn.farm/api/gql"
@@ -114,7 +119,7 @@ async def fetch_historical_pricepershare_kong(vault_address, chain_id, limit=100
         print(f"Exception while fetching data from Kong: {str(e)}")
         return None
 
-async def generate_graph_and_report_kong(historical_pps, name, symbol, decimals, chain_id, vault_address, user_input, time_range):
+async def generate_graph_and_report_kong(historical_pps, name, symbol, decimals, chain_id, vault_address, user_input, time_range, v3=False, api_version='N/A', tvl=None):
     days_back = {
         '1d': 1,
         '1w': 7,
@@ -167,7 +172,10 @@ async def generate_graph_and_report_kong(historical_pps, name, symbol, decimals,
         chain=get_chain_name_from_chain_id(chain_id),
         name=name,
         symbol=symbol,
-        is_block_based=False
+        is_block_based=False,
+        v3=v3,
+        api_version=api_version,
+        tvl=tvl
     )
 
     return response_message, buffer
@@ -307,7 +315,7 @@ def generate_and_send_graph(prices, timestamps, aprs, name, symbol):
 
     return buffer
 
-async def generate_text_report(vault_address, earliest_timestamp=None, latest_timestamp=None, earliest_block=None, latest_block=None, user_input=None, earliest_price=None, latest_price=None, decimals=None, chain=None, name=None, symbol=None, is_block_based=False):
+async def generate_text_report(vault_address, earliest_timestamp=None, latest_timestamp=None, earliest_block=None, latest_block=None, user_input=None, earliest_price=None, latest_price=None, decimals=None, chain=None, name=None, symbol=None, is_block_based=False, v3=False, api_version='N/A', tvl=None):
     past_pps_adjusted = earliest_price / (10 ** decimals)
     current_pps_adjusted = latest_price / (10 ** decimals)
     difference_adjusted = current_pps_adjusted - past_pps_adjusted
@@ -332,9 +340,11 @@ async def generate_text_report(vault_address, earliest_timestamp=None, latest_ti
     apy = ((1 + (apr / 100) * (time_difference_days / 365)) ** (365 / time_difference_days) - 1) * 100 if apr != 0 else 0
 
     response_message = (
-        f"Vault: `{clean_string(name.strip())} ({clean_string(symbol.strip())})`\n"
-        f"Chain: `{chain}`\n"
+    response_message = (
+        f"Vault: **[{clean_string(name.strip())} ({clean_string(symbol.strip())})]({link})**\n"
         f"Contract: `{vault_address}`\n"
+        f"Chain: `{chain}` | V3: `{v3}` | API Version: `{api_version}`\n"
+        f"TVL: `${tvl:,.2f}`\n"
     )
 
     if is_block_based and earliest_block is not None and latest_block is not None:
@@ -382,7 +392,7 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
     try:
         user_input = update.message.text.strip().split()
 
-        await update.message.reply_text("🔍 Querying data, please wait...", parse_mode="Markdown")
+        await update.message.reply_text("🔍 Querying data, please wait...", parse_mode="Markdown", disable_web_page_preview=True)
 
         if len(user_input) < 2 or not Web3.is_address(user_input[0]):
             instructions = (
@@ -391,7 +401,7 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
                 "2. `<contract> <block> <assets>` Include asset amount to compare growth.\n"
                 "3. `<contract> <time>` Generate a graph for time-based trends (1d, 1w, 1m, 3m, 6m).\n"
             )
-            await update.message.reply_text(instructions, parse_mode="Markdown")
+            await update.message.reply_text(instructions, parse_mode="Markdown", disable_web_page_preview=True)
             return
 
         vault_address = Web3.to_checksum_address(user_input[0])
@@ -418,7 +428,7 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
             current_timestamp = int(datetime.utcnow().timestamp())
 
             try:
-                chain_id, name, symbol, decimals = await fetch_vault_details_kong(vault_address)
+                chain_id, name, symbol, decimals, v3, api_version, tvl = await fetch_vault_details_kong(vault_address)
 
                 if not chain_id or not name or not symbol or decimals is None:
                     raise ValueError("Invalid data returned from Kong API")
@@ -434,17 +444,20 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
                         chain_id,
                         vault_address,
                         user_input,
-                        time_range  
+                        time_range,
+                        v3=v3,
+                        api_version=api_version,
+                        tvl=tvl
                     )
 
                     await update.message.reply_photo(photo=InputFile(buffer, filename="graph.png"))
                     buffer.close()
-                    await update.message.reply_text(response_message, parse_mode="Markdown")
+                    await update.message.reply_text(response_message, parse_mode="Markdown", disable_web_page_preview=True)
                     return
 
             except Exception as e:
                 print(f"Kong API failed: {str(e)}")
-                await update.message.reply_text("🔍 Primary query failed. Switching to fallback query. Please wait...", parse_mode="Markdown")
+                await update.message.reply_text("🔍 Primary query failed. Switching to fallback query. Please wait...", parse_mode="Markdown", disable_web_page_preview=True)
 
             correct_chain, correct_chain_details = await query_chain_fallback(vault_address, current_timestamp)
 
@@ -476,9 +489,9 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
                     symbol=symbol,
                     is_block_based=False
                 )
-                await update.message.reply_text(response_message, parse_mode="Markdown")
+                await update.message.reply_text(response_message, parse_mode="Markdown", disable_web_page_preview=True)
             else:
-                await update.message.reply_text("Error: Not enough data to generate report.", parse_mode="Markdown")
+                await update.message.reply_text("Error: Not enough data to generate report.", parse_mode="Markdown", disable_web_page_preview=True)
 
         elif user_input[1].isdigit():
             block_number = int(user_input[1])
@@ -498,7 +511,7 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
                     continue
 
             if not correct_chain:
-                await update.message.reply_text("Error: Could not find the vault on any supported chain.", parse_mode="Markdown")
+                await update.message.reply_text("Error: Could not find the vault on any supported chain.", parse_mode="Markdown", disable_web_page_preview=True)
                 return
 
             past_price_per_share, name, symbol, decimals = correct_chain_details
@@ -522,15 +535,15 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
                 is_block_based=True
             )
 
-            await update.message.reply_text(response_message, parse_mode="Markdown")
+            await update.message.reply_text(response_message, parse_mode="Markdown", disable_web_page_preview=True)
             return
 
         else:
-            await update.message.reply_text("Invalid input. Please check your command and try again.", parse_mode="Markdown")
+            await update.message.reply_text("Invalid input. Please check your command and try again.", parse_mode="Markdown", disable_web_page_preview=True)
             return
 
     except Exception as e:
-        await update.message.reply_text(f"An unexpected error occurred: {str(e)}", parse_mode="Markdown")
+        await update.message.reply_text(f"An unexpected error occurred: {str(e)}", parse_mode="Markdown", disable_web_page_preview=True)
 
 async def query_chain_fallback(vault_address, current_timestamp):
     correct_chain = None
@@ -657,12 +670,15 @@ async def fetch_all_vaults_kong():
     url = "https://kong.yearn.farm/api/gql"
     query = """
     query {
-      vaults {
+      vaults(yearn: true) {
         chainId
         address
         name
         symbol
         decimals
+        tvl {
+          close
+        }
       }
     }
     """
@@ -671,12 +687,12 @@ async def fetch_all_vaults_kong():
             async with session.post(url, json={"query": query}) as response:
                 if response.status == 200:
                     data = await response.json()
-                    vaults = data.get("data", {}).get("vaults", [])
-                    if not vaults:
-                        print("No vaults found in response from Kong.")
+                    if "data" in data and "vaults" in data["data"]:
+                        print(f"Total Yearn-endorsed vaults fetched: {len(data['data']['vaults'])}")
+                        return data["data"]["vaults"]
                     else:
-                        print(f"Fetched {len(vaults)} vaults from Kong.")
-                    return vaults
+                        print(f"Unexpected response format: {data}")
+                        return None
                 else:
                     print(f"Error fetching data from Kong: {response.status}")
                     return None
@@ -730,8 +746,8 @@ async def daily_apr_report(context: CallbackContext = None, chat_id: int = None)
 
     try:
         print("Starting daily APR report generation")
-        # Step 1: Fetch all vaults
         vaults = None
+        MIN_TVL = 10000
         for attempt in range(5):
             try:
                 vaults = await fetch_all_vaults_kong()
@@ -752,79 +768,87 @@ async def daily_apr_report(context: CallbackContext = None, chat_id: int = None)
             if vault and 'address' in vault and 'decimals' in vault:
                 try:
                     vault['decimals'] = int(vault['decimals'])
-                    valid_vaults.append(vault)
+                    tvl = vault['tvl']['close'] if 'tvl' in vault and vault['tvl'] and 'close' in vault['tvl'] else 0
+                    if tvl >= MIN_TVL:
+                        valid_vaults.append(vault)
                 except ValueError as e:
                     print(f"Error converting decimals for vault {vault.get('address', 'Unknown')}: {e}")
 
         total_vaults = len(valid_vaults)
-        # print(f"Total valid vaults after filtering: {total_vaults}")
-        # if context and chat_id:
-        #    await context.bot.send_message(chat_id=chat_id, text=f"{total_vaults} vaults found. Starting processing...")
 
-        # Step 2: Process timeseries data for each vault in batches of 100
-        batch_size = 2000  # Check Kong response for errors and rate limits before bumping up batch size. Start from 50-100
+        batch_size = 2000
         apr_data = []
-        timeseries_data = {}  # Dictionary to store timeseries data for reuse
+        timeseries_data = {}
         for i in range(0, len(valid_vaults), batch_size):
             batch = valid_vaults[i:i + batch_size]
-            # print(f"Processing batch {i // batch_size + 1} with {len(batch)} vaults")
             tasks = [fetch_with_retries(vault) for vault in batch]
             batch_results = await asyncio.gather(*tasks)
 
-            # Step 3: Store timeseries data for reuse and calculate APR for each vault in the batch
             for vault, timeseries in zip(batch, batch_results):
                 if timeseries is not None:
-                    timeseries_data[vault['address']] = timeseries  # Store timeseries data
-                    apr = calculate_apr(timeseries)
+                    timeseries_data[vault['address']] = timeseries
+
+                    if len(timeseries) >= 7:
+                        past_pps = timeseries[-7]['value']
+                        current_pps = timeseries[-1]['value']
+                        if past_pps != 0:
+                            apr = ((current_pps - past_pps) / past_pps) * (365 / 7) * 100
+                        else:
+                            apr = 0
+                    else:
+                        apr = 0
+
+                    if len(timeseries) >= 2:
+                        latest_pps = timeseries[-1]['value']
+                        pps_1_day_ago = timeseries[-2]['value']
+                        if pps_1_day_ago != 0:
+                            apr_1_day = ((latest_pps - pps_1_day_ago) / pps_1_day_ago) * 365 * 100
+                        else:
+                            apr_1_day = 0
+                    else:
+                        apr_1_day = 0
+
                     apy = interpolate_apy(apr)
                     apr_data.append({
                         'vault': vault,
                         'apr': apr,
-                        'apy': apy
+                        'apy': apy,
+                        'apr_1_day': apr_1_day
                     })
                 else:
                     print(f"Failed to fetch timeseries for vault: {vault['address']}")
 
-            # Step 4: Send progress report after each batch
-            # progress_message = f"Completed processing {min(i + batch_size, total_vaults)} out of {total_vaults} vaults"
-            # print(progress_message)
-            # if context and chat_id:
-            #    await context.bot.send_message(chat_id=chat_id, text=progress_message)
-
-            # Add delay between batches
             await asyncio.sleep(1)
 
-        # Step 5: Sort and get top 20 APR vaults
         if not apr_data:
             print("No APR data available after processing all batches.")
             if context and chat_id:
                 await context.bot.send_message(chat_id=chat_id, text="No valid APR data found. Report generation aborted.")
             return
 
-        top_20_vaults = sorted(apr_data, key=lambda x: x['apr'], reverse=True)[:20]
+        top_15_vaults = sorted(apr_data, key=lambda x: x['apr'], reverse=True)[:15]
 
-        # Step 6: Format the Telegram report
-        message = "Top 20 Vaults by 7-Day APR:\n"
-        for idx, vault_data in enumerate(top_20_vaults, start=1):
+        message = "Top 15 Vaults by 7-Day APR:\n"
+        for idx, vault_data in enumerate(top_15_vaults, start=1):
             vault = vault_data['vault']
             apr = vault_data['apr']
             apy = vault_data['apy']
+            apr_1_day = vault_data['apr_1_day']
+            tvl = vault['tvl']['close'] if 'tvl' in vault and vault['tvl'] and 'close' in vault['tvl'] else 0
             link = f"https://yearn.fi/v3/{vault['chainId']}/{vault['address']}"
             message += (f"{idx}. **[{clean_string(vault['name'])}]({link})**\n"
-                       f"   📋 Address: `{vault['address']}`\n"
-                       f"   📊 APR: `{apr:.2f}%` | APY: `{apy:.2f}%`\n\n")
+                        f"   📋 Address: `{vault['address']}`\n"
+                        f"   💰 TVL: `${tvl:,.2f}`\n"
+                        f"   📊 7-Day APR: `{apr:.2f}%` | APY: `{apy:.2f}%`\n"
+                        f"   📊 1-Day APR: `{apr_1_day:.2f}%`\n\n")
 
-        # Step 7: Send the message to your chat ID
         if context and chat_id:
             await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown', disable_web_page_preview=True)
 
-        # Step 8: Call PPS Reduction Check using the same timeseries data
         await check_pps_reduction(context=context, chat_id=chat_id, timeseries_data=timeseries_data)
 
-        # Step 9: Call Top Gainers and Losers report using the same timeseries data
         await top_gainers_losers_report(context=context, chat_id=chat_id, timeseries_data=timeseries_data, valid_vaults=valid_vaults if valid_vaults else [])
 
-        # Step 10: Clear timeseries data after use
         timeseries_data.clear()
 
     except Exception as e:
@@ -924,9 +948,11 @@ async def top_gainers_losers_report(context: CallbackContext = None, chat_id: in
             name = vault_info['name']
             symbol = vault_info['symbol']
             link = f"https://yearn.fi/v3/{chain_id}/{vault_address}"
+            tvl = vault_info['tvl']['close'] if 'tvl' in vault_info and vault_info['tvl'] and 'close' in vault_info['tvl'] else 0
             message += (f"{idx}. **[{clean_string(name)}]({link})**\n"
                        f"   📋 Address: `{vault_address}`\n"
                        f"   🔼 APR Change: `{vault_data['apr_change']:.2f}%`\n"
+                       f"   💰 TVL: `${tvl:,.2f}`\n"
                        f"   📊 APR Today: `{vault_data['apr_today']:.2f}%` | APY: `{vault_data['apy_today']:.2f}%`\n"
                        f"   📈 APR Yesterday: `{vault_data['apr_yesterday']:.2f}%` | APY Yesterday: `{interpolate_apy(vault_data['apr_yesterday']):.2f}%`\n\n")
 
@@ -938,9 +964,11 @@ async def top_gainers_losers_report(context: CallbackContext = None, chat_id: in
             name = vault_info['name']
             symbol = vault_info['symbol']
             link = f"https://yearn.fi/v3/{chain_id}/{vault_address}"
+            tvl = vault_info['tvl']['close'] if 'tvl' in vault_info and vault_info['tvl'] and 'close' in vault_info['tvl'] else 0
             message += (f"{idx}. **[{clean_string(name)}]({link})**\n"
                        f"   📋 Address: `{vault_address}`\n"
                        f"   🔽 APR Change: `{vault_data['apr_change']:.2f}%`\n"
+                       f"   💰 TVL: `${tvl:,.2f}`\n"
                        f"   📊 APR Today: `{vault_data['apr_today']:.2f}%` | APY: `{vault_data['apy_today']:.2f}%`\n"
                        f"   📉 APR Yesterday: `{vault_data['apr_yesterday']:.2f}%` | APY Yesterday: `{interpolate_apy(vault_data['apr_yesterday']):.2f}%`\n\n")
 
