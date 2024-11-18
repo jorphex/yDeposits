@@ -3,8 +3,14 @@ ydeposits
   - ~~all vaults to check for pps reduction (anomalies)~~ :heavy_check_mark:
   - ~~highest apr vaults~~ :heavy_check_mark:
   - ~~top apr gainers/losers, 5 each~~ :heavy_check_mark:
-- compare two vaults (contract1 contract 2 time)
+- ~~compare two vaults (contract1 contract 2 time)~~ ❌ (use two queries instead)
 - add tvl bar graph in graph generation (yvault total supply x pps x price)
 - add date input for historical data (contract yyyy-mm-dd)
-- tag or alias to save common queries (tag contract time/block)
-- add pie chart of strategy allocation conditional if more than one
+- tag or alias to save common queries (tag contract time/block) (probably unnecessary due to how fast and easy it is to copy and paste contract queries)
+- add pie chart of strategy allocation conditional if more than one (probably impractical to add)
+- ~~add tvl threshold in daily reports~~ :heavy_check_mark:
+- ~~add yearn flag filter in daily reports~~ :heavy_check_mark:
+- ~~add v3 flag in vault reports~~ :heavy_check_mark:
+- ~~add tvl in all reports~~ :heavy_check_mark:
+- ~~link vault name to vault page in all reports~~ :heavy_check_mark:
+- ~~add 1-day APR in daily reports~~ :heavy_check_mark:
