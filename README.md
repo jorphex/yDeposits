@@ -42,9 +42,3 @@ Time: `2024-10-01 14:12:35 UTC` -> `2024-10-08 14:12:11 UTC (7.00 days)`
 pricePerShare: `1.070306797979569720` -> `1.071053017649064243`  
 pricePerShare Difference: `0.000746219669494523`  
 APR: `3.64%`    APY: `3.70%`  
-
-### Updates
-- Daily report messages, sent to specified chat id, containing
-  - Top 20 highest 7 day APR vaults
-  - Check for pps reduction (anomalies)
-  - Top 5 APR gainers/losers
