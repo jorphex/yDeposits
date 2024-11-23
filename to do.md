@@ -5,6 +5,7 @@ ydeposits
   - ~~top apr gainers/losers, 5 each~~ :heavy_check_mark:
 - ~~compare two vaults (contract1 contract 2 time)~~ ❌ (use two queries instead)
 - ~~compare multiple vaults showing 1-day, 7-day, and 30-day aprs, and tvl in bar graph~~ :heavy_check_mark:
+- ~~allow single contract address input to get a bar graph snapshot of aprs and tvl~~ :heavy_check_mark:
 - ~~add tvl bar graph in graph generation (yvault total supply x pps x price)~~ :heavy_check_mark:
 - add date input for historical data (contract yyyy-mm-dd)
 - tag or alias to save common queries (tag contract time/block) (probably unnecessary due to how fast and easy it is to copy and paste contract queries)
