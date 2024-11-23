@@ -1,6 +1,7 @@
 import re
 import requests
 import matplotlib.pyplot as plt
+from matplotlib.ticker import ScalarFormatter, FuncFormatter, MaxNLocator
 import aiohttp
 import asyncio
 import numpy as np
@@ -391,15 +392,20 @@ def get_matching_pps(historical_pps, target_timestamp):
 async def handle_message(update: Update, context: CallbackContext) -> None:
     try:
         user_input = update.message.text.strip().split()
+        vault_addresses = [address for address in user_input if Web3.is_address(address)]
 
+        if len(vault_addresses) > 0:
+            await handle_message_for_vault_comparison(update, context, vault_addresses)
+            return
+            
         await update.message.reply_text("🔍 Querying data, please wait...", parse_mode="Markdown", disable_web_page_preview=True)
 
         if len(user_input) < 2 or not Web3.is_address(user_input[0]):
             instructions = (
                 "You can interact with the bot using these inputs:\n"
-                "1. `<contract> <block>` Get a report comparing the pricePerShare at a specific block with the latest block.\n"
-                "2. `<contract> <block> <assets>` Include asset amount to compare growth.\n"
-                "3. `<contract> <time>` Generate a graph for time-based trends (1d, 1w, 1m, 3m, 6m).\n"
+                "1. `<contract> <block> (<assets>)` Generate a report comparing the pricePerShare at a specific block with the latest block, with optional `<assets>` input to compare growth.\n"
+                "2. `<contract> <time> (<assets>)` Generate a graph and report for time-based trends (1d, 1w, 1m, 3m, 6m), with optional `<assets>` input to compare growth.\n"
+                "3. `<contract1> (<contract2>)...` Generate a graph and report for one or multiple vaults showing 1-Day, 7-Day, and 30-Day APRs and TVL.\n"
             )
             await update.message.reply_text(instructions, parse_mode="Markdown", disable_web_page_preview=True)
             return
@@ -665,6 +671,168 @@ async def process_data_for_apr(sampled_dates, timestamp_to_price, decimals):
         aprs.append(apr)
 
     return prices_filtered, timestamps_filtered, aprs
+
+async def handle_message_for_vault_comparison(update: Update, context: CallbackContext, vault_addresses: list) -> None:
+    try:
+        await update.message.reply_text("🔍 Querying data, please wait...", parse_mode="Markdown")
+
+        vault_data = []
+
+        for vault_address in vault_addresses:
+            chain_id, name, symbol, decimals, v3, api_version, tvl = await fetch_vault_details_kong(vault_address)
+
+            if not chain_id or not name or not symbol or decimals is None:
+                raise ValueError(f"Invalid data returned for vault {vault_address}")
+
+            historical_pps = await fetch_historical_pricepershare_kong(vault_address, chain_id)
+            if not historical_pps:
+                raise ValueError(f"No historical PPS data for vault {vault_address}")
+
+            apr_1d = calculate_apr_explicit(historical_pps, decimals, days=1)
+            apr_7d = calculate_apr_explicit(historical_pps, decimals, days=7)
+            apr_30d = calculate_apr_explicit(historical_pps, decimals, days=30)
+
+            vault_data.append({
+                'name': name,
+                'symbol': symbol,
+                'apr_1d': apr_1d,
+                'apr_7d': apr_7d,
+                'apr_30d': apr_30d,
+                'tvl': tvl,
+                'address': vault_address,
+                'chain_id': chain_id 
+            })
+
+        buffer = generate_grouped_bar_graph(vault_data)
+        await update.message.reply_photo(photo=InputFile(buffer, filename="vault_comparison.png"))
+        buffer.close()
+
+        response_message = generate_vault_comparison_text_report(vault_data)
+        await update.message.reply_text(response_message, parse_mode="Markdown", disable_web_page_preview=True)
+
+    except Exception as e:
+        await update.message.reply_text(f"An unexpected error occurred while processing multiple vaults: {str(e)}", parse_mode="Markdown")
+
+def calculate_apr_explicit(timeseries, decimals, days):
+    for entry in timeseries:
+        entry['time'] = int(entry['time'])
+
+    current_timestamp = timeseries[-1]['time']
+    target_timestamp = current_timestamp - (days * 24 * 60 * 60)
+
+    past_data = min(timeseries, key=lambda x: abs(x['time'] - target_timestamp))
+    current_pps = timeseries[-1]['value']
+    past_pps = past_data['value']
+
+    if past_pps == 0:
+        return 0
+
+    apr = ((current_pps - past_pps) / past_pps) * (365 / days) * 100
+    return apr
+
+def generate_grouped_bar_graph(vault_data):
+    if not isinstance(vault_data, list):
+        vault_data = [vault_data]
+
+    # Vault data
+    vault_labels = [data['symbol'] for data in vault_data]
+    apr_1d = [data['apr_1d'] for data in vault_data]
+    apr_7d = [data['apr_7d'] for data in vault_data]
+    apr_30d = [data['apr_30d'] for data in vault_data]
+    tvls = [data['tvl'] for data in vault_data]
+
+    x = np.arange(len(vault_labels))
+    width = 0.2
+
+    fig, ax1 = plt.subplots(figsize=(12, 8))
+
+    max_tvl = max(tvls)
+    if max_tvl >= 1e6:
+        tvl_label = "TVL (Million USD)"
+        tvls = [tvl / 1e6 for tvl in tvls]
+    else:
+        tvl_label = "TVL (Thousand USD)"
+        tvls = [tvl / 1e3 for tvl in tvls]
+
+    # Plotting bars
+    bars1 = ax1.bar(x - 1.5 * width, apr_1d, width, label='1-Day APR', color='red', alpha=0.5)
+    bars2 = ax1.bar(x - 0.5 * width, apr_7d, width, label='7-Day APR', color='red', alpha=0.65)
+    bars3 = ax1.bar(x + 0.5 * width, apr_30d, width, label='30-Day APR', color='red', alpha=0.8)
+    ax2 = ax1.twinx()
+    ax2.yaxis.set_major_formatter(ScalarFormatter())
+    ax2.get_yaxis().get_offset_text().set_visible(False)
+    bars4 = ax2.bar(x + 1.5 * width, tvls, width, label='TVL', color='darkgreen', alpha=0.6)
+
+    ax1.set_yscale('linear')
+    ax2.set_yscale('linear')
+
+    # Prevent scientific notation
+    ax1.yaxis.set_major_formatter(ScalarFormatter(useOffset=False))
+    ax1.yaxis.get_major_formatter().set_scientific(False)
+    ax2.yaxis.set_major_formatter(ScalarFormatter(useOffset=False))
+    ax2.yaxis.get_major_formatter().set_scientific(False)
+
+    # In case ScalarFormatter doesn't fully apply
+    ax1.yaxis.set_major_formatter(FuncFormatter(lambda x, _: f'{int(x):,}'))
+    ax2.yaxis.set_major_formatter(FuncFormatter(lambda x, _: f'{int(x):,}'))
+
+    # Limit the number of ticks on the TVL axis to avoid clutter
+    ax2.yaxis.set_major_locator(MaxNLocator(nbins=6, prune='both'))
+
+    # Label
+    ax1.set_xlabel('Vaults', fontsize=16)
+    ax1.set_ylabel('APR (%)', fontsize=16, color='red')
+    ax2.set_ylabel(tvl_label, fontsize=16, color='darkgreen')
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(vault_labels, fontsize=14)
+    ax1.tick_params(axis='y', labelcolor='red')
+    ax2.tick_params(axis='y', labelcolor='darkgreen')
+
+    # Title and legend
+    plt.title('Vault Performance Comparison', fontsize=20)
+    fig.legend(loc='upper left', bbox_to_anchor=(0.125, 0.875), fontsize=8)
+
+    # Annotate bars with values
+    for bar, apr in zip(bars1, apr_1d):
+        ax1.text(bar.get_x() + bar.get_width() / 2, bar.get_height(), f'{apr:.2f}%', ha='center', va='bottom', fontsize=8, color='black')
+    for bar, apr in zip(bars2, apr_7d):
+        ax1.text(bar.get_x() + bar.get_width() / 2, bar.get_height(), f'{apr:.2f}%', ha='center', va='bottom', fontsize=8, color='black')
+    for bar, apr in zip(bars3, apr_30d):
+        ax1.text(bar.get_x() + bar.get_width() / 2, bar.get_height(), f'{apr:.2f}%', ha='center', va='bottom', fontsize=8, color='black')
+    for bar, tvl in zip(bars4, tvls):
+        label = f"${tvl:.2f}M" if max_tvl >= 1e6 else f"${tvl:.2f}K"
+        ax2.text(bar.get_x() + bar.get_width() / 2, bar.get_height(), label, ha='center', va='bottom', fontsize=8, color='black')
+
+    buffer = BytesIO()
+    plt.subplots_adjust(left=0.125, right=0.875, top=0.875, bottom=0.125)
+    plt.savefig(buffer, format='png', dpi=150)
+    buffer.seek(0)
+    plt.close()
+
+    return buffer
+
+def generate_vault_comparison_text_report(vault_data):
+    response_message = ""
+
+    for vault in vault_data:
+        name = vault.get('name', 'Unknown')
+        symbol = vault.get('symbol', 'Unknown')
+        address = vault.get('address', 'Unknown')
+        chain_id = vault.get('chain_id', 'Unknown')
+        one_day_apr = vault.get('apr_1d', 0)
+        seven_day_apr = vault.get('apr_7d', 0)
+        thirty_day_apr = vault.get('apr_30d', 0)
+        tvl = vault.get('tvl', 0)
+
+        link = f"https://yearn.fi/v3/{chain_id}/{address}"
+        response_message += (
+            f"\nVault: **[{name} ({symbol})]({link})**\n"
+            f"Contract: `{address}`\n"
+            f"1-Day APR: `{one_day_apr:.2f}%` | 7-Day APR: `{seven_day_apr:.2f}%` | 30-Day APR: `{thirty_day_apr:.2f}%`\n"
+            f"TVL: `${tvl:,.2f}`\n"
+        )
+
+    return response_message
 
 async def fetch_all_vaults_kong():
     url = "https://kong.yearn.farm/api/gql"
