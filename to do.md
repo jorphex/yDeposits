@@ -8,7 +8,7 @@ ydeposits
 - ~~allow single contract address input to get a bar graph snapshot of aprs and tvl~~ :heavy_check_mark:
 - ~~add tvl bar graph in graph generation (yvault total supply x pps x price)~~ :heavy_check_mark:
 - add date input for historical data (contract yyyy-mm-dd)
-- tag or alias to save common queries (tag contract time/block) (probably unnecessary due to how fast and easy it is to copy and paste contract queries)
+- tag or alias to save common queries (eg. tag contract time/block, untag contract1 contract2) (probably unnecessary due to how fast and easy it is to copy and paste contract queries)
 - add pie chart of strategy allocation conditional if more than one (probably impractical to add)
 - ~~add tvl threshold in daily reports~~ :heavy_check_mark:
 - ~~add yearn flag filter in daily reports~~ :heavy_check_mark:
