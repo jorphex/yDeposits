@@ -16,4 +16,4 @@ ydeposits
 - ~~add tvl in all reports~~ :heavy_check_mark:
 - ~~link vault name to vault page in all reports~~ :heavy_check_mark:
 - ~~add 1-day APR in daily reports~~ :heavy_check_mark:
-- optimize readability
+- ~~optimize graph readability~~ :heavy_check_mark:
