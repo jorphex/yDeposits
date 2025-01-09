@@ -120,8 +120,37 @@ async def fetch_historical_pricepershare_kong(vault_address, chain_id, limit=100
         print(f"Exception while fetching data from Kong: {str(e)}")
         return None
 
-async def generate_graph_and_report_kong(historical_pps, name, symbol, decimals, chain_id, vault_address, user_input, time_range, v3=False, api_version='N/A', tvl=None):
-    days_back = {
+async def fetch_tvl_timeseries(chain_id, vault_address, limit=1000):
+    url = "https://kong.yearn.farm/api/gql"
+    query = """
+    query Tvls($chainId: Int!, $address: String, $limit: Int) {
+      tvls(chainId: $chainId, address: $address, limit: $limit) {
+        priceUsd
+        time
+        value
+      }
+    }
+    """
+    variables = {
+        "chainId": chain_id,
+        "address": vault_address,
+        "limit": limit
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json={"query": query, "variables": variables}) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    tvls = data.get("data", {}).get("tvls", [])
+                    return [{'time': int(entry['time']), 'value': entry['value']} for entry in tvls]
+                else:
+                    print(f"Error fetching TVL data from Kong: {response.status}")
+                    return None
+    except Exception as e:
+        print(f"Exception while fetching TVL data from Kong: {str(e)}")
+        return None
+
+async def generate_graph_and_report_kong(historical_pps, tvl_timeseries, name, symbol, decimals, chain_id, vault_address, user_input, time_range, v3=False, api_version='N/A', tvl=None):    days_back = {
         '1d': 1,
         '1w': 7,
         '1m': 30,
@@ -155,12 +184,28 @@ async def generate_graph_and_report_kong(historical_pps, name, symbol, decimals,
             print(f"No PPS data for timestamp {ts}")
             timestamp_to_price[ts] = None
 
+    tvl_timeseries = [{'time': int(entry['time']), 'value': entry['value']} for entry in tvl_timeseries]
+    tvl_timeseries.sort(key=lambda x: x['time'])
+    tvl_mapping = {entry['time']: entry['value'] for entry in tvl_timeseries}
+
+    # Map TVL data
+    timestamp_to_tvl = {}
+    for ts in timestamps:
+        tvl_value = tvl_mapping.get(ts)
+        if tvl_value is not None:
+            timestamp_to_tvl[ts] = tvl_value
+        else:
+            print(f"No TVL data for timestamp {ts}")
+            timestamp_to_tvl[ts] = None
+
     prices_for_plot, timestamps_for_plot, aprs_for_plot = await process_data_for_apr(sampled_dates, timestamp_to_price, decimals)
 
-    if not prices_for_plot or not timestamps_for_plot:
+    tvls_for_plot = [timestamp_to_tvl[ts] for ts in timestamps_for_plot]
+
+    if not prices_for_plot or not timestamps_for_plot or not tvls_for_plot:
         raise RuntimeError("Insufficient data to proceed.")
 
-    buffer = generate_and_send_graph(prices_for_plot, timestamps_for_plot, aprs_for_plot, name, symbol)
+    buffer = generate_and_send_graph(prices_for_plot, tvls_for_plot, timestamps_for_plot, aprs_for_plot, name, symbol)
 
     response_message = await generate_text_report(
         vault_address,
@@ -240,7 +285,7 @@ def format_price_per_share(value, decimals):
     return f"{formatted_value:.18f}".rstrip('0').rstrip('.')
 
 def format_assets_trimmed(value, decimals):
-    formatted_value = value / (10 ** decimals)  
+    formatted_value = value / (10 ** decimals)
     return f"{formatted_value:.4f}"
 
 def get_block_by_timestamp(chain, timestamp, retries=3, delay=1):
@@ -273,7 +318,7 @@ def get_block_timestamp(chain, block_number):
     except Exception as e:
         raise RuntimeError(f"Failed to fetch block timestamp for block {block_number} on {chain}: {str(e)}")
 
-def generate_and_send_graph(prices, timestamps, aprs, name, symbol):
+def generate_and_send_graph(prices, tvls, timestamps, aprs, name, symbol):
     name = clean_string(name)
     symbol = clean_string(symbol)
 
@@ -281,32 +326,57 @@ def generate_and_send_graph(prices, timestamps, aprs, name, symbol):
 
     fig, ax1 = plt.subplots(figsize=(12, 8))
 
-    ax1.plot(dates, aprs, label="APR", color='darkred', marker="o")
-    ax1.grid(True, axis='y', linestyle=':', color='gray', alpha=0.75)
-    ax1.set_ylabel('APR (%)', color='darkred', fontsize=18)
-    ax1.tick_params(axis='y', labelcolor='darkred', labelsize=16)
-
-    min_apr = min(aprs)
-    max_apr = max(aprs)
-    ax1.set_ylim(min_apr - (0.02 * abs(min_apr)), max_apr + (0.05 * abs(max_apr)))
-
+    ax1.set_axisbelow(True)
     ax2 = ax1.twinx()
-    ax2.plot(dates, prices, label="pricePerShare", color='blue', marker="o")
-    ax2.grid(True, axis='y')
-    ax2.set_ylabel('pricePerShare', color='blue', fontsize=18)
-    ax2.tick_params(axis='y', labelcolor='blue', labelsize=16)
+    ax2.set_axisbelow(True)
+
+    ax1.grid(True, axis='y', linestyle=':', color='gray', alpha=0.75, zorder=0)
+    ax2.grid(True, axis='y', linestyle=':', color='lightgray', alpha=0.75, zorder=0)
+
+    ax2.plot(dates, prices, label="pricePerShare", color='darkblue', marker="s", linewidth=6, markersize=9, zorder=2)
+    ax2.set_ylabel('pricePerShare', color='darkblue', fontsize=18)
+    ax2.tick_params(axis='y', labelcolor='darkblue', labelsize=16)
 
     min_price = min(prices)
     max_price = max(prices)
-    ax2.set_ylim(min_price - (0.002 * min_price), max_price + (0.002 * max_price))
+    padding_price = (max_price - min_price) * 0.25
+    ax2.set_ylim(min_price - padding_price, max_price + padding_price)
+
+        ax1.plot(dates, aprs, label="APR", color='darkgreen', marker="o", linewidth=6, markersize=9, zorder=3)
+    ax1.set_ylabel('APR (%)', color='darkgreen', fontsize=18)
+    ax1.tick_params(axis='y', labelcolor='darkgreen', labelsize=16)
+
+    min_apr = min(aprs)
+    max_apr = max(aprs)
+    padding_apr = (max_apr - min_apr) * 0.1
+    ax1.set_ylim(min_apr - padding_apr, max_apr + padding_apr)
+
+    ax3 = ax1.twinx()
+    ax3.spines['right'].set_position(('outward', 60))
+    ax3.set_axisbelow(True)
+    ax3.tick_params(axis='y', colors='darkslategray', labelsize=16)
+    ax3.spines['right'].set_color('darkslategray')
+    ax3.get_yaxis().set_visible(False)
+    ax3.spines['right'].set_visible(False)
+
+    bars = ax3.bar(dates, tvls, alpha=0.3, color='darkslategray', label='TVL', zorder=1)
+    ax3.set_ylabel('TVL (USD)', color='darkslategray', fontsize=18)
+
+    for bar, tvl in zip(bars, tvls):
+        label = f"${tvl / 1e6:.2f}M" if tvl >= 1e6 else (f"${tvl / 1e3:.2f}K" if tvl >= 1e3 else f"${tvl:.2f}")
+        ax3.text(bar.get_x() + bar.get_width() / 2, bar.get_height(), label, ha='center', va='bottom', fontsize=12, color='black')
+
+    max_tvl = max(tvls)
+    ax3.set_ylim(0, max_tvl * 1.2)
 
     ax1.set_xlabel('Date', fontsize=16)
     ax1.tick_params(axis='x', labelsize=14)
     plt.xticks(rotation=45)
 
-    plt.title(f"{name} ({symbol}) Vault - pricePerShare vs APR\n*Rolling 7-day APR", fontsize=22)
+    plt.title(f"{symbol} - pricePerShare, APR, TVL\n$\mathit{{Rolling\ 7-day\ APR}}$", fontsize=22, fontdict={'fontsize': 14}, loc='center')
     ax1.legend(loc="upper left", fontsize=14)
     ax2.legend(loc="upper right", fontsize=14)
+    ax3.legend(loc="upper center", fontsize=14)
 
     buffer = BytesIO()
     plt.subplots_adjust(left=0.125, right=0.875, top=0.875, bottom=0.125)
@@ -316,7 +386,27 @@ def generate_and_send_graph(prices, timestamps, aprs, name, symbol):
 
     return buffer
 
-async def generate_text_report(vault_address, earliest_timestamp=None, latest_timestamp=None, earliest_block=None, latest_block=None, user_input=None, earliest_price=None, latest_price=None, decimals=None, chain=None, name=None, symbol=None, is_block_based=False, v3=False, api_version='N/A', tvl=None):
+async def generate_text_report(
+    vault_address,
+    earliest_timestamp=None,
+    latest_timestamp=None,
+    earliest_block=None,
+    latest_block=None,
+    user_input=None,
+    earliest_price=None,
+    latest_price=None,
+    decimals=None,
+    chain=None,
+    name=None,
+    symbol=None,
+    is_block_based=False,
+    v3=False,
+    api_version='N/A',
+    tvl=None
+):
+    if earliest_price is None or latest_price is None or decimals is None:
+        return "Error: Missing required data (pricePerShare or decimals) to generate the report."
+        
     past_pps_adjusted = earliest_price / (10 ** decimals)
     current_pps_adjusted = latest_price / (10 ** decimals)
     difference_adjusted = current_pps_adjusted - past_pps_adjusted
@@ -340,7 +430,12 @@ async def generate_text_report(vault_address, earliest_timestamp=None, latest_ti
     apr = (difference_adjusted / past_pps_adjusted) * (365 / time_difference_days) * 100 if time_difference_days != 0 else 0
     apy = ((1 + (apr / 100) * (time_difference_days / 365)) ** (365 / time_difference_days) - 1) * 100 if apr != 0 else 0
 
-    response_message = (
+    chain_id = get_chain_id_from_chain_name(chain)
+    link = f"https://yearn.fi/v3/{chain_id}/{vault_address}"
+
+    if tvl is None:
+        tvl = 0.0
+        
     response_message = (
         f"Vault: **[{clean_string(name.strip())} ({clean_string(symbol.strip())})]({link})**\n"
         f"Contract: `{vault_address}`\n"
@@ -354,7 +449,7 @@ async def generate_text_report(vault_address, earliest_timestamp=None, latest_ti
     response_message += (
         f"Time: `{earliest_block_time} UTC` -> `{latest_block_time} UTC ({time_difference_days:.2f} days)`\n"
         f"pricePerShare: `{past_price_per_share_formatted}` -> `{current_price_per_share_formatted}`\n"
-        f"pricePerShare Difference: `{difference_formatted}`\n"
+        f"Difference: `{difference_formatted}`\n"
         f"APR: `{apr:.2f}%`    APY: `{apy:.2f}%`"
     )
 
@@ -394,120 +489,16 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
         user_input = update.message.text.strip().split()
         vault_addresses = [address for address in user_input if Web3.is_address(address)]
 
-        if len(vault_addresses) > 0:
-            await handle_message_for_vault_comparison(update, context, vault_addresses)
-            return
-            
-        await update.message.reply_text("🔍 Querying data, please wait...", parse_mode="Markdown", disable_web_page_preview=True)
-
-        if len(user_input) < 2 or not Web3.is_address(user_input[0]):
-            instructions = (
-                "You can interact with the bot using these inputs:\n"
-                "1. `<contract> <block> (<assets>)` Generate a report comparing the pricePerShare at a specific block with the latest block, with optional `<assets>` input to compare growth.\n"
-                "2. `<contract> <time> (<assets>)` Generate a graph and report for time-based trends (1d, 1w, 1m, 3m, 6m), with optional `<assets>` input to compare growth.\n"
-                "3. `<contract1> (<contract2>)...` Generate a graph and report for one or multiple vaults showing 1-Day, 7-Day, and 30-Day APRs and TVL.\n"
-            )
-            await update.message.reply_text(instructions, parse_mode="Markdown", disable_web_page_preview=True)
-            return
-
-        vault_address = Web3.to_checksum_address(user_input[0])
-
-        if user_input[1] in ['1d', '1w', '1m', '3m', '6m']:
-            time_range = user_input[1]
-
-            days_back = {
-                '1d': 1,
-                '1w': 7,
-                '1m': 30,
-                '3m': 90,
-                '6m': 180
-            }[time_range]
-
-            sampling_frequency_days = {
-                '1d': 1,
-                '1w': 1,
-                '1m': 3,
-                '3m': 6,
-                '6m': 12
-            }[time_range]
-
-            current_timestamp = int(datetime.utcnow().timestamp())
-
-            try:
-                chain_id, name, symbol, decimals, v3, api_version, tvl = await fetch_vault_details_kong(vault_address)
-
-                if not chain_id or not name or not symbol or decimals is None:
-                    raise ValueError("Invalid data returned from Kong API")
-
-                historical_pps = await fetch_historical_pricepershare_kong(vault_address, chain_id)
-
-                if historical_pps:
-                    response_message, buffer = await generate_graph_and_report_kong(
-                        historical_pps,
-                        name,
-                        symbol,
-                        decimals,
-                        chain_id,
-                        vault_address,
-                        user_input,
-                        time_range,
-                        v3=v3,
-                        api_version=api_version,
-                        tvl=tvl
-                    )
-
-                    await update.message.reply_photo(photo=InputFile(buffer, filename="graph.png"))
-                    buffer.close()
-                    await update.message.reply_text(response_message, parse_mode="Markdown", disable_web_page_preview=True)
-                    return
-
-            except Exception as e:
-                print(f"Kong API failed: {str(e)}")
-                await update.message.reply_text("🔍 Primary query failed. Switching to fallback query. Please wait...", parse_mode="Markdown", disable_web_page_preview=True)
-
-            correct_chain, correct_chain_details = await query_chain_fallback(vault_address, current_timestamp)
-
-            if not correct_chain or not correct_chain_details:
-                raise RuntimeError("Could not find the contract on any supported chain.")
-
-            name, symbol, decimals, fetched_chain = correct_chain_details
-            
-            timestamps, sampled_dates = await generate_timestamps_with_offsets(current_timestamp, days_back, sampling_frequency_days, align_to_utc_midnight=False)
-            timestamp_to_price = await fetch_price_data(timestamps, vault_address, correct_chain, decimals)
-
-            prices_for_plot, timestamps_for_plot, aprs_for_plot = await process_data_for_apr(sampled_dates, timestamp_to_price, decimals)
-
-            buffer = generate_and_send_graph(prices_for_plot, timestamps_for_plot, aprs_for_plot, name, symbol)
-            await update.message.reply_photo(photo=InputFile(buffer, filename="graph.png"))
-            buffer.close()
-
-            if prices_for_plot and timestamps_for_plot:
-                response_message = await generate_text_report(
-                    vault_address,
-                    earliest_timestamp=timestamps_for_plot[0],
-                    latest_timestamp=timestamps_for_plot[-1],
-                    user_input=user_input,
-                    earliest_price=timestamp_to_price[timestamps_for_plot[0]],
-                    latest_price=timestamp_to_price[timestamps_for_plot[-1]],
-                    decimals=decimals,
-                    chain=correct_chain,
-                    name=name,
-                    symbol=symbol,
-                    is_block_based=False
-                )
-                await update.message.reply_text(response_message, parse_mode="Markdown", disable_web_page_preview=True)
-            else:
-                await update.message.reply_text("Error: Not enough data to generate report.", parse_mode="Markdown", disable_web_page_preview=True)
-
-        elif user_input[1].isdigit():
+        if len(vault_addresses) == 1 and len(user_input) > 1 and user_input[1].isdigit():
             block_number = int(user_input[1])
+            await update.message.reply_text("🔍 Querying data, please wait...", parse_mode="Markdown")
 
             correct_chain = None
             correct_chain_details = None
 
             for chain_name, provider in chain_providers.items():
                 try:
-                    price_per_share, name, symbol, decimals, _ = await get_vault_details_rpc(vault_address, block_number, chain_name)
+                    price_per_share, name, symbol, decimals, _ = await get_vault_details_rpc(vault_address[0], block_number, chain_name)
                     if price_per_share:
                         correct_chain = chain_name
                         correct_chain_details = (price_per_share, name, symbol, decimals)
@@ -525,10 +516,10 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
             web3 = create_web3_instance(chain_providers[correct_chain], correct_chain)
             latest_block_number = web3.eth.block_number
 
-            current_price_per_share, _, _, _, _ = await get_vault_details_rpc(vault_address, latest_block_number, correct_chain)
+            current_price_per_share, _, _, _, _ = await get_vault_details_rpc(vault_address[0], latest_block_number, correct_chain)
 
             response_message = await generate_text_report(
-                vault_address,
+                vault_address[0],
                 earliest_block=block_number,
                 latest_block=latest_block_number,
                 user_input=user_input,
@@ -544,8 +535,114 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
             await update.message.reply_text(response_message, parse_mode="Markdown", disable_web_page_preview=True)
             return
 
-        else:
-            await update.message.reply_text("Invalid input. Please check your command and try again.", parse_mode="Markdown", disable_web_page_preview=True)
+        elif len(vault_addresses) == 1 and len(user_input) > 1:
+            if user_input[1] in ['1d', '1w', '1m', '3m', '6m']:
+                await update.message.reply_text("🔍 Querying data, please wait...", parse_mode="Markdown")
+                time_range = user_input[1]
+
+                days_back = {
+                    '1d': 1,
+                    '1w': 7,
+                    '1m': 30,
+                    '3m': 90,
+                    '6m': 180
+                }[time_range]
+
+                sampling_frequency_days = {
+                    '1d': 1,
+                    '1w': 1,
+                    '1m': 3,
+                    '3m': 6,
+                    '6m': 12
+                }[time_range]
+
+                current_timestamp = int(datetime.utcnow().timestamp())
+
+                try:
+                    chain_id, name, symbol, decimals, v3, api_version, tvl = await fetch_vault_details_kong(vault_addresses[0])
+
+                    if not chain_id or not name or not symbol or decimals is None:
+                        raise ValueError("Invalid data returned from Kong API")
+
+                    historical_pps = await fetch_historical_pricepershare_kong(vault_addresses[0], chain_id)
+                    
+                    tvl_timeseries = await fetch_tvl_timeseries(chain_id, vault_addresses[0])
+
+                    if historical_pps and tvl_timeseries:
+                        response_message, buffer = await generate_graph_and_report_kong(
+                            historical_pps,
+                            tvl_timeseries,
+                            name,
+                            symbol,
+                            decimals,
+                            chain_id,
+                            vault_addresses[0],
+                            user_input,
+                            time_range,
+                            v3=v3,
+                            api_version=api_version,
+                            tvl=tvl
+                        )
+
+                        await update.message.reply_photo(photo=InputFile(buffer, filename="graph.png"))
+                        buffer.close()
+                        await update.message.reply_text(response_message, parse_mode="Markdown", disable_web_page_preview=True)
+                        return
+
+                except Exception as e:
+                    print(f"Kong API failed: {str(e)}")
+                    await update.message.reply_text("🔍 Primary query failed. Switching to fallback query. Please wait...", parse_mode="Markdown")
+
+                correct_chain, correct_chain_details = await query_chain_fallback(vault_addresses[0], current_timestamp)
+
+                if not correct_chain or not correct_chain_details:
+                    raise RuntimeError("Could not find the contract on any supported chain.")
+
+                name, symbol, decimals, fetched_chain = correct_chain_details
+
+                timestamps, sampled_dates = await generate_timestamps_with_offsets(current_timestamp, days_back, sampling_frequency_days, align_to_utc_midnight=False)
+
+                timestamp_to_price = await fetch_price_data(timestamps, vault_addresses[0], correct_chain, decimals)
+
+                prices_for_plot, timestamps_for_plot, aprs_for_plot = await process_data_for_apr(sampled_dates, timestamp_to_price, decimals)
+
+                buffer = generate_and_send_graph(prices_for_plot, timestamps_for_plot, aprs_for_plot, name, symbol)
+                await update.message.reply_photo(photo=InputFile(buffer, filename="graph.png"))
+                buffer.close()
+
+                if prices_for_plot and timestamps_for_plot:
+                    response_message = await generate_text_report(
+                        vault_addresses[0],
+                        earliest_timestamp=timestamps_for_plot[0],
+                        latest_timestamp=timestamps_for_plot[-1],
+                        user_input=user_input,
+                        earliest_price=timestamp_to_price[timestamps_for_plot[0]],
+                        latest_price=timestamp_to_price[timestamps_for_plot[-1]],
+                        decimals=decimals,
+                        chain=correct_chain,
+                        name=name,
+                        symbol=symbol,
+                        is_block_based=False
+                    )
+                    await update.message.reply_text(response_message, parse_mode="Markdown", disable_web_page_preview=True)
+                else:
+                    await update.message.reply_text("Error: Not enough data to generate report.", parse_mode="Markdown")
+                return
+
+        if len(vault_addresses) > 0:
+            await handle_message_for_vault_comparison(update, context, vault_addresses)
+            return
+
+        await update.message.reply_text("🔍 Querying data, please wait...", parse_mode="Markdown")
+
+        if len(user_input) < 2 or not Web3.is_address(user_input[0]):
+            instructions = (
+                "You can interact with the bot using these inputs:\n"
+                "1. `<contract> <block> (<assets>)` Generate a report comparing the pricePerShare at a specific block with the latest block, with optional `<assets>` input to compare growth.\n"
+                "2. `<contract> <time> (<assets>)` Generate a graph and report for time-based trends (1d, 1w, 1m, 3m, 6m), with optional `<assets>` input to compare growth.\n"
+                "3. `<contract1> (<contract2>)...` Generate a graph and report for one or multiple vaults showing 1-Day, 7-Day, and 30-Day APRs and TVL.\n"
+            )
+            await update.message.reply_text(instructions, parse_mode="Markdown")
             return
 
     except Exception as e:
