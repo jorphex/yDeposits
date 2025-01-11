@@ -29,7 +29,7 @@ YOUR_CHAT_ID = 'TELEGRAM_CHAT_ID_HERE'
 
 def create_web3_instance(provider, chain):
     web3 = Web3(Web3.HTTPProvider(provider))
-    if chain in ['polygon']:  
+    if chain in ['polygon']:  # Add more chains if needed
         web3.middleware_onion.inject(geth_poa_middleware, layer=0)
     return web3
 
@@ -150,7 +150,8 @@ async def fetch_tvl_timeseries(chain_id, vault_address, limit=1000):
         print(f"Exception while fetching TVL data from Kong: {str(e)}")
         return None
 
-async def generate_graph_and_report_kong(historical_pps, tvl_timeseries, name, symbol, decimals, chain_id, vault_address, user_input, time_range, v3=False, api_version='N/A', tvl=None):    days_back = {
+async def generate_graph_and_report_kong(historical_pps, tvl_timeseries, name, symbol, decimals, chain_id, vault_address, user_input, time_range, v3=False, api_version='N/A', tvl=None):
+    days_back = {
         '1d': 1,
         '1w': 7,
         '1m': 30,
@@ -498,7 +499,7 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
 
             for chain_name, provider in chain_providers.items():
                 try:
-                    price_per_share, name, symbol, decimals, _ = await get_vault_details_rpc(vault_address[0], block_number, chain_name)
+                    price_per_share, name, symbol, decimals, _ = await get_vault_details_rpc(vault_addresses[0], block_number, chain_name)
                     if price_per_share:
                         correct_chain = chain_name
                         correct_chain_details = (price_per_share, name, symbol, decimals)
@@ -516,10 +517,10 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
             web3 = create_web3_instance(chain_providers[correct_chain], correct_chain)
             latest_block_number = web3.eth.block_number
 
-            current_price_per_share, _, _, _, _ = await get_vault_details_rpc(vault_address[0], latest_block_number, correct_chain)
+            current_price_per_share, _, _, _, _ = await get_vault_details_rpc(vault_addresses[0], latest_block_number, correct_chain)
 
             response_message = await generate_text_report(
-                vault_address[0],
+                vault_addresses[0],
                 earliest_block=block_number,
                 latest_block=latest_block_number,
                 user_input=user_input,
@@ -852,14 +853,14 @@ def generate_grouped_bar_graph(vault_data):
         tvls = [tvl / 1e3 for tvl in tvls]
 
     # Plotting bars
-    bars1 = ax1.bar(x - 1.5 * width, apr_1d, width, label='1-Day APR', color='red', alpha=0.5)
-    bars2 = ax1.bar(x - 0.5 * width, apr_7d, width, label='7-Day APR', color='red', alpha=0.65)
-    bars3 = ax1.bar(x + 0.5 * width, apr_30d, width, label='30-Day APR', color='red', alpha=0.8)
+    bars1 = ax1.bar(x - 1.5 * width, apr_1d, width, label='1-Day APR', color='darkgreen', alpha=0.4)
+    bars2 = ax1.bar(x - 0.5 * width, apr_7d, width, label='7-Day APR', color='darkgreen', alpha=0.6)
+    bars3 = ax1.bar(x + 0.5 * width, apr_30d, width, label='30-Day APR', color='darkgreen', alpha=0.8)
     ax2 = ax1.twinx()
     ax2.yaxis.set_major_formatter(ScalarFormatter())
     ax2.get_yaxis().get_offset_text().set_visible(False)
-    bars4 = ax2.bar(x + 1.5 * width, tvls, width, label='TVL', color='darkgreen', alpha=0.6)
-
+    bars4 = ax2.bar(x + 1.5 * width, tvls, width, label='TVL', color='darkslategray', alpha=0.7)
+    
     ax1.set_yscale('linear')
     ax2.set_yscale('linear')
 
@@ -877,13 +878,13 @@ def generate_grouped_bar_graph(vault_data):
     ax2.yaxis.set_major_locator(MaxNLocator(nbins=6, prune='both'))
 
     # Label
-    ax1.set_xlabel('Vaults', fontsize=16)
-    ax1.set_ylabel('APR (%)', fontsize=16, color='red')
-    ax2.set_ylabel(tvl_label, fontsize=16, color='darkgreen')
+    ax1.set_xlabel('Vault', fontsize=18)
+    ax1.set_ylabel('APR (%)', fontsize=18, color='darkgreen')
+    ax2.set_ylabel(tvl_label, fontsize=18, color='darkslategray')
     ax1.set_xticks(x)
-    ax1.set_xticklabels(vault_labels, fontsize=14)
-    ax1.tick_params(axis='y', labelcolor='red')
-    ax2.tick_params(axis='y', labelcolor='darkgreen')
+    ax1.set_xticklabels(vault_labels, fontsize=16)
+    ax1.tick_params(axis='y', labelcolor='darkgreen', labelsize=16)
+    ax2.tick_params(axis='y', labelcolor='darkslategray', labelsize=16)
 
     # Title and legend
     plt.title('Vault Performance Comparison', fontsize=20)
@@ -1256,8 +1257,10 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CommandHandler("daily_apr_report", manual_report_trigger))
 
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(daily_apr_report, 'cron', hour=0, minute=0, kwargs={'chat_id': YOUR_CHAT_ID})  # 0000 UTC daily
+    loop = asyncio.get_event_loop()
+
+    scheduler = AsyncIOScheduler(event_loop=loop)
+    scheduler.add_job(daily_apr_report, 'cron', hour=0, minute=0, kwargs={'chat_id': YOUR_CHAT_ID}, misfire_grace_time=60)  # Run at 0000 UTC every day
     scheduler.start()
 
     print("Starting the bot...")
