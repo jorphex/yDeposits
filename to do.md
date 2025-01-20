@@ -3,6 +3,7 @@ ydeposits
   - ~~all vaults to check for pps reduction (anomalies)~~ :heavy_check_mark:
   - ~~highest apr vaults~~ :heavy_check_mark:
   - ~~top apr gainers/losers, 5 each~~ :heavy_check_mark:
+  - ~~filter for yearn flag from kong~~ :heavy_check_mark:
 - ~~compare two vaults (contract1 contract 2 time)~~ ❌ (use two queries instead)
 - ~~compare multiple vaults showing 1-day, 7-day, and 30-day aprs, and tvl in bar graph~~ :heavy_check_mark:
 - ~~allow single contract address input to get a bar graph snapshot of aprs and tvl~~ :heavy_check_mark:
