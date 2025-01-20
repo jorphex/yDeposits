@@ -19,3 +19,5 @@ ydeposits
 - ~~add 1-day APR in daily reports~~ :heavy_check_mark:
 - ~~optimize graph readability~~ :heavy_check_mark:
 - add strategy insights in text report
+- add risk level
+- add vault suggestion on single vault query
