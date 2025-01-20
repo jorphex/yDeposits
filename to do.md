@@ -7,9 +7,9 @@ ydeposits
 - ~~compare multiple vaults showing 1-day, 7-day, and 30-day aprs, and tvl in bar graph~~ :heavy_check_mark:
 - ~~allow single contract address input to get a bar graph snapshot of aprs and tvl~~ :heavy_check_mark:
 - ~~add tvl bar graph in graph generation (yvault total supply x pps x price)~~ :heavy_check_mark:
-- add date input for historical data (contract yyyy-mm-dd)
-- tag or alias to save common queries (eg. tag contract time/block, untag contract1 contract2) (probably unnecessary due to how fast and easy it is to copy and paste contract queries)
-- add pie chart of strategy allocation conditional if more than one (probably impractical to add)
+- ~~add date input for historical data (contract yyyy-mm-dd)~~ ❌ (stick with block numbers as they are more precise)
+- ~~tag or alias to save common queries (eg. tag contract time/block, untag contract1 contract2)~~ ❌ (probably unnecessary due to how fast and easy it is to copy and paste contract queries)
+- ~~add pie chart of strategy allocation conditional if more than one (probably impractical to add)~~ ❌ (impractical)
 - ~~add tvl threshold in daily reports~~ :heavy_check_mark:
 - ~~add yearn flag filter in daily reports~~ :heavy_check_mark:
 - ~~add v3 flag in vault reports~~ :heavy_check_mark:
@@ -17,3 +17,4 @@ ydeposits
 - ~~link vault name to vault page in all reports~~ :heavy_check_mark:
 - ~~add 1-day APR in daily reports~~ :heavy_check_mark:
 - ~~optimize graph readability~~ :heavy_check_mark:
+- add strategy insights in text report
