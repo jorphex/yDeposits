@@ -18,6 +18,9 @@ ydeposits
 - ~~link vault name to vault page in all reports~~ :heavy_check_mark:
 - ~~add 1-day APR in daily reports~~ :heavy_check_mark:
 - ~~optimize graph readability~~ :heavy_check_mark:
-- add strategy insights in text report
+- add strategies and allocation in text report
 - add risk level
-- add vault suggestion on single vault query
+- ~~add vault suggestion on single vault query~~ ❌ (irrelevant)
+- pull kong data and cache every 3, 6, or 12 hours
+- check historical asset or vault price viability
+- search by name or symbol, and chain
