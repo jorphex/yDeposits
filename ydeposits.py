@@ -1,3 +1,4 @@
+import sys
 import re
 import requests
 import matplotlib.pyplot as plt
@@ -16,28 +17,34 @@ import time
 import math
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+sys.stdout = sys.stderr
+
+# Define Web3 providers for each chain
 chain_providers = {
-    'ethereum': 'https://eth-mainnet.g.alchemy.com/v2/RPC_API_KEY_HERE',
-    'arbitrum': 'https://arb-mainnet.g.alchemy.com/v2/RPC_API_KEY_HERE',
-    'polygon': 'https://polygon-mainnet.g.alchemy.com/v2/RPC_API_KEY_HERE',
-    'base': 'https://base-mainnet.g.alchemy.com/v2/RPC_API_KEY_HERE',
-    'optimism': 'https://opt-mainnet.g.alchemy.com/v2/RPC_API_KEY_HERE',
+    'ethereum': 'https://eth-mainnet.g.alchemy.com/v2/ALCHEMY_KEY',
+    'arbitrum': 'https://arb-mainnet.g.alchemy.com/v2/ALCHEMY_KEY',
+    'polygon': 'https://polygon-mainnet.g.alchemy.com/v2/ALCHEMY_KEY',
+    'base': 'https://base-mainnet.g.alchemy.com/v2/ALCHEMY_KEY',
+    'optimism': 'https://opt-mainnet.g.alchemy.com/v2/ALCHEMY_KEY',
 }
 
-TOKEN = 'BOT_TOKEN_HERE'
-YOUR_CHAT_ID = 'TELEGRAM_CHAT_ID_HERE'
+TOKEN = 'TELEGRAM_BOT_TOKEN'
+YOUR_CHAT_ID = 'YOUR_CHAT_ID'
 
+# Web3 instance
 def create_web3_instance(provider, chain):
     web3 = Web3(Web3.HTTPProvider(provider))
-    if chain in ['polygon']:  # Add more chains if needed
+    if chain in ['polygon']:
         web3.middleware_onion.inject(geth_poa_middleware, layer=0)
     return web3
 
+# Clean up the name and symbol
 def clean_string(input_string):
     cleaned_string = ''.join(c for c in input_string if c.isprintable())
     cleaned_string = re.sub(r'[^a-zA-Z0-9\s\-\(\)]', '', cleaned_string)
     return cleaned_string.strip()
 
+# Chain to chainId mapping
 def get_chain_id_from_chain_name(chain_name):
     chain_mapping = {
         'ethereum': 1,
@@ -48,6 +55,7 @@ def get_chain_id_from_chain_name(chain_name):
     }
     return chain_mapping.get(chain_name, None)
 
+# Fetch vault details from Kong
 async def fetch_vault_details_kong(vault_address):
     url = "https://kong.yearn.farm/api/gql"
     query = """
@@ -86,6 +94,7 @@ async def fetch_vault_details_kong(vault_address):
         print(f"Exception while fetching data from Kong: {str(e)}")
         return None, None, None, None, None, None, None
 
+# Fetch historical pricepershare from Kong
 async def fetch_historical_pricepershare_kong(vault_address, chain_id, limit=1000):
     url = "https://kong.yearn.farm/api/gql"
     query = """
@@ -119,7 +128,7 @@ async def fetch_historical_pricepershare_kong(vault_address, chain_id, limit=100
     except Exception as e:
         print(f"Exception while fetching data from Kong: {str(e)}")
         return None
-
+        
 async def fetch_tvl_timeseries(chain_id, vault_address, limit=1000):
     url = "https://kong.yearn.farm/api/gql"
     query = """
@@ -151,6 +160,7 @@ async def fetch_tvl_timeseries(chain_id, vault_address, limit=1000):
         return None
 
 async def generate_graph_and_report_kong(historical_pps, tvl_timeseries, name, symbol, decimals, chain_id, vault_address, user_input, time_range, v3=False, api_version='N/A', tvl=None):
+    # Days back and sampling frequency
     days_back = {
         '1d': 1,
         '1w': 7,
@@ -169,13 +179,17 @@ async def generate_graph_and_report_kong(historical_pps, tvl_timeseries, name, s
 
     current_timestamp = int(datetime.utcnow().timestamp())
 
+    # Generate timestamps and sampled dates
     timestamps, sampled_dates = await generate_timestamps_with_offsets(current_timestamp, days_back, sampling_frequency_days, align_to_utc_midnight=True)
 
+    # Prepare historical PPS data
     historical_pps = [{'time': int(entry['time']), 'value': entry['value']} for entry in historical_pps]
     historical_pps.sort(key=lambda x: x['time'])
 
+    # Create a timestamp to PPS mapping
     pps_mapping = {entry['time']: entry['value'] for entry in historical_pps}
 
+    # Map price data
     timestamp_to_price = {}
     for ts in timestamps:
         price = pps_mapping.get(ts)
@@ -185,6 +199,7 @@ async def generate_graph_and_report_kong(historical_pps, tvl_timeseries, name, s
             print(f"No PPS data for timestamp {ts}")
             timestamp_to_price[ts] = None
 
+    # Prepare TVL data
     tvl_timeseries = [{'time': int(entry['time']), 'value': entry['value']} for entry in tvl_timeseries]
     tvl_timeseries.sort(key=lambda x: x['time'])
     tvl_mapping = {entry['time']: entry['value'] for entry in tvl_timeseries}
@@ -199,15 +214,20 @@ async def generate_graph_and_report_kong(historical_pps, tvl_timeseries, name, s
             print(f"No TVL data for timestamp {ts}")
             timestamp_to_tvl[ts] = None
 
+    # Process data for APR calculations
     prices_for_plot, timestamps_for_plot, aprs_for_plot = await process_data_for_apr(sampled_dates, timestamp_to_price, decimals)
 
+    # Extract TVL values for the same timestamps
     tvls_for_plot = [timestamp_to_tvl[ts] for ts in timestamps_for_plot]
 
+    # Check if we have enough data
     if not prices_for_plot or not timestamps_for_plot or not tvls_for_plot:
         raise RuntimeError("Insufficient data to proceed.")
 
-    buffer = generate_and_send_graph(prices_for_plot, tvls_for_plot, timestamps_for_plot, aprs_for_plot, name, symbol)
+    # Generate and send the graph
+    buffer = generate_and_send_graph(prices_for_plot, tvls_for_plot, timestamps_for_plot, aprs_for_plot, name, symbol, plot_tvl=True)
 
+    # Generate the text report
     response_message = await generate_text_report(
         vault_address,
         earliest_timestamp=timestamps_for_plot[0],
@@ -244,24 +264,32 @@ async def get_vault_details_rpc(vault_address, block_number, chain):
             print(f"Failed to connect to {chain}.")
             return None, None, None, None, None
 
+        # print(f"Querying chain {chain} for block {block_number}...")
+
         if block_number is None:
+            # print(f"Block number is None, skipping RPC call for {chain}")
             return None, None, None, None, None
 
+        # Query the contract for pricePerShare at the specified block
         price_per_share = web3.eth.call({'to': vault_address, 'data': function_signature_price}, block_identifier=block_number)
         name = web3.eth.call({'to': vault_address, 'data': function_signature_name}, block_identifier=block_number).decode("utf-8")
         symbol = web3.eth.call({'to': vault_address, 'data': function_signature_symbol}, block_identifier=block_number).decode("utf-8")
         decimals = web3.eth.call({'to': vault_address, 'data': function_signature_decimals}, block_identifier=block_number)
-        decimals = int.from_bytes(decimals, byteorder='big')  
+        decimals = int.from_bytes(decimals, byteorder='big')  # Convert decimals to integer
 
+        # Clean up name and symbol
         name = clean_string(name)
         symbol = clean_string(symbol)
 
+        # Convert pricePerShare from bytes to integer
         price_per_share = int.from_bytes(price_per_share, byteorder='big')
 
+        # If any values are empty or zero, consider the chain as invalid
         if price_per_share == 0 or not name or not symbol or decimals == 0:
             print(f"Invalid data returned from {chain}: pricePerShare: {price_per_share}, name: {name}, symbol: {symbol}, decimals: {decimals}")
             return None, None, None, None, None
 
+        # print(f"Successfully fetched pricePerShare: {price_per_share}, name: {name}, symbol: {symbol}, decimals: {decimals} from chain {chain} for block {block_number}")
         return price_per_share, name, symbol, decimals, chain
 
     except ValueError as e:
@@ -271,6 +299,7 @@ async def get_vault_details_rpc(vault_address, block_number, chain):
 
     return None, None, None, None, None
 
+# Map chainId to chain name
 def get_chain_name_from_chain_id(chain_id):
     chain_mapping = {
         1: 'ethereum',
@@ -281,16 +310,19 @@ def get_chain_name_from_chain_id(chain_id):
     }
     return chain_mapping.get(chain_id, None)
 
+# Format pricePerShare and difference into a human-readable form
 def format_price_per_share(value, decimals):
     formatted_value = value / (10 ** decimals)
     return f"{formatted_value:.18f}".rstrip('0').rstrip('.')
 
+# Format the asset value and trim to four decimals
 def format_assets_trimmed(value, decimals):
-    formatted_value = value / (10 ** decimals)
+    formatted_value = value / (10 ** decimals)  # Adjust for the token's precision
     return f"{formatted_value:.4f}"
 
 def get_block_by_timestamp(chain, timestamp, retries=3, delay=1):
     url = f"https://coins.llama.fi/block/{chain}/{timestamp}"
+    # print(f"Fetching block number from DeFiLlama for chain: {chain}, timestamp: {timestamp}")
 
     for attempt in range(retries):
         response = requests.get(url)
@@ -299,17 +331,18 @@ def get_block_by_timestamp(chain, timestamp, retries=3, delay=1):
             block = response.json().get('height')
             if block is None:
                 print(f"Error: Could not find block number for timestamp {timestamp} on {chain}. Response: {response.json()}")
-                return None  
+                return None  # Handle missing block numbers
+            # print(f"Successfully fetched block {block} for timestamp {timestamp} on {chain}")
             return block
         else:
             print(f"Attempt {attempt + 1} failed with status code {response.status_code}")
             if attempt < retries - 1:
                 time.sleep(delay)
-                delay *= 2  
+                delay *= 2  # Exponential backoff
             else:
                 print(f"Error: Failed to fetch block number after {retries} attempts.")
                 print(f"Response content: {response.content}")
-                return None  
+                return None
 
 def get_block_timestamp(chain, block_number):
     try:
@@ -319,66 +352,87 @@ def get_block_timestamp(chain, block_number):
     except Exception as e:
         raise RuntimeError(f"Failed to fetch block timestamp for block {block_number} on {chain}: {str(e)}")
 
-def generate_and_send_graph(prices, tvls, timestamps, aprs, name, symbol):
+def generate_and_send_graph(prices, tvls, timestamps, aprs, name, symbol, plot_tvl=True):
+    # Clean name and symbol
     name = clean_string(name)
     symbol = clean_string(symbol)
 
+    # Convert timestamps to dates
     dates = [datetime.utcfromtimestamp(ts).strftime('%m-%d') for ts in timestamps]
 
+    # Create the plot
     fig, ax1 = plt.subplots(figsize=(12, 8))
 
+    # Ensure grid lines are behind the plot elements
     ax1.set_axisbelow(True)
     ax2 = ax1.twinx()
     ax2.set_axisbelow(True)
 
-    ax1.grid(True, axis='y', linestyle=':', color='gray', alpha=0.75, zorder=0)
+    # Plot the gridlines first
+    ax1.grid(True, axis='y', linestyle=':', color='gray', alpha=0.75, zorder=0)  # Gridlines below everything
     ax2.grid(True, axis='y', linestyle=':', color='lightgray', alpha=0.75, zorder=0)
 
+    # Plot pricePerShare on the right y-axis (below APR line)
     ax2.plot(dates, prices, label="pricePerShare", color='darkblue', marker="s", linewidth=6, markersize=9, zorder=2)
     ax2.set_ylabel('pricePerShare', color='darkblue', fontsize=18)
     ax2.tick_params(axis='y', labelcolor='darkblue', labelsize=16)
 
+    # Adjust the y-axis to show full pricePerShare numbers
     min_price = min(prices)
     max_price = max(prices)
     padding_price = (max_price - min_price) * 0.25
     ax2.set_ylim(min_price - padding_price, max_price + padding_price)
 
-        ax1.plot(dates, aprs, label="APR", color='darkgreen', marker="o", linewidth=6, markersize=9, zorder=3)
+    # Plot APR on the left y-axis (on top of pricePerShare line)
+    ax1.plot(dates, aprs, label="APR", color='darkgreen', marker="o", linewidth=6, markersize=9, zorder=3)
     ax1.set_ylabel('APR (%)', color='darkgreen', fontsize=18)
     ax1.tick_params(axis='y', labelcolor='darkgreen', labelsize=16)
 
+    # Adjust APR axis to reflect real values
     min_apr = min(aprs)
     max_apr = max(aprs)
     padding_apr = (max_apr - min_apr) * 0.1
     ax1.set_ylim(min_apr - padding_apr, max_apr + padding_apr)
 
-    ax3 = ax1.twinx()
-    ax3.spines['right'].set_position(('outward', 60))
-    ax3.set_axisbelow(True)
-    ax3.tick_params(axis='y', colors='darkslategray', labelsize=16)
-    ax3.spines['right'].set_color('darkslategray')
-    ax3.get_yaxis().set_visible(False)
-    ax3.spines['right'].set_visible(False)
+    # Create a third y-axis for TVL
+    if plot_tvl:
+        ax3 = ax1.twinx()
+        ax3.spines['right'].set_position(('outward', 60))
+        ax3.set_axisbelow(True)
+        ax3.tick_params(axis='y', colors='darkslategray', labelsize=16)
+        ax3.spines['right'].set_color('darkslategray')
+        ax3.get_yaxis().set_visible(False)
+        ax3.spines['right'].set_visible(False)
 
-    bars = ax3.bar(dates, tvls, alpha=0.3, color='darkslategray', label='TVL', zorder=1)
-    ax3.set_ylabel('TVL (USD)', color='darkslategray', fontsize=18)
+        # Plot TVL on the third y-axis (as a transparent bar graph)
+        bars = ax3.bar(dates, tvls, alpha=0.3, color='darkslategray', label='TVL', zorder=1)
+        ax3.set_ylabel('TVL (USD)', color='darkslategray', fontsize=18)
 
-    for bar, tvl in zip(bars, tvls):
-        label = f"${tvl / 1e6:.2f}M" if tvl >= 1e6 else (f"${tvl / 1e3:.2f}K" if tvl >= 1e3 else f"${tvl:.2f}")
-        ax3.text(bar.get_x() + bar.get_width() / 2, bar.get_height(), label, ha='center', va='bottom', fontsize=12, color='black')
+        # Set annotations to sit on top of bars by default
+        for bar, tvl in zip(bars, tvls):
+            label = f"${tvl / 1e6:.2f}M" if tvl >= 1e6 else (f"${tvl / 1e3:.2f}K" if tvl >= 1e3 else f"${tvl:.2f}")
+            ax3.text(bar.get_x() + bar.get_width() / 2, bar.get_height(), label, ha='center', va='bottom', fontsize=12, color='black')
 
-    max_tvl = max(tvls)
-    ax3.set_ylim(0, max_tvl * 1.2)
+        # Adjust bar height to avoid clipping
+        max_tvl = max(tvls)
+        if max_tvl == 0:
+            ax3.set_ylim(0, 1)
+        else:
+            ax3.set_ylim(0, max_tvl * 1.2)
 
+        ax3.legend(loc="upper center", fontsize=14) # Move legend inside if plot_tvl is True
+
+    # Set x-axis labels
     ax1.set_xlabel('Date', fontsize=16)
     ax1.tick_params(axis='x', labelsize=14)
     plt.xticks(rotation=45)
 
+    # Title and legend
     plt.title(f"{symbol} - pricePerShare, APR, TVL\n$\mathit{{Rolling\ 7-day\ APR}}$", fontsize=22, fontdict={'fontsize': 14}, loc='center')
     ax1.legend(loc="upper left", fontsize=14)
     ax2.legend(loc="upper right", fontsize=14)
-    ax3.legend(loc="upper center", fontsize=14)
 
+    # Save the graph to buffer
     buffer = BytesIO()
     plt.subplots_adjust(left=0.125, right=0.875, top=0.875, bottom=0.125)
     plt.savefig(buffer, format='png', dpi=150)
@@ -405,9 +459,11 @@ async def generate_text_report(
     api_version='N/A',
     tvl=None
 ):
+    # Check if required fields are `None`
     if earliest_price is None or latest_price is None or decimals is None:
         return "Error: Missing required data (pricePerShare or decimals) to generate the report."
-        
+
+    # Adjust pricePerShare values
     past_pps_adjusted = earliest_price / (10 ** decimals)
     current_pps_adjusted = latest_price / (10 ** decimals)
     difference_adjusted = current_pps_adjusted - past_pps_adjusted
@@ -415,10 +471,12 @@ async def generate_text_report(
     if past_pps_adjusted == 0:
         return "Error: The earliest pricePerShare is zero, which is invalid for APR calculation."
 
+    # Format pricePerShare values
     past_price_per_share_formatted = f"{past_pps_adjusted:.18f}".rstrip('0').rstrip('.')
     current_price_per_share_formatted = f"{current_pps_adjusted:.18f}".rstrip('0').rstrip('.')
     difference_formatted = f"{difference_adjusted:.18f}".rstrip('0').rstrip('.')
 
+    # Time calculations
     if is_block_based:
         earliest_block_time = datetime.utcfromtimestamp(get_block_timestamp(chain, earliest_block))
         latest_block_time = datetime.utcfromtimestamp(get_block_timestamp(chain, latest_block))
@@ -428,15 +486,19 @@ async def generate_text_report(
         latest_block_time = datetime.utcfromtimestamp(latest_timestamp)
         time_difference_days = (latest_block_time - earliest_block_time).total_seconds() / 86400
 
+    # APR and APY calculation
     apr = (difference_adjusted / past_pps_adjusted) * (365 / time_difference_days) * 100 if time_difference_days != 0 else 0
     apy = ((1 + (apr / 100) * (time_difference_days / 365)) ** (365 / time_difference_days) - 1) * 100 if apr != 0 else 0
 
+    # Generate link for the vault
     chain_id = get_chain_id_from_chain_name(chain)
     link = f"https://yearn.fi/v3/{chain_id}/{vault_address}"
 
+    # TVL check to avoid `NoneType` formatting error
     if tvl is None:
         tvl = 0.0
-        
+
+    # Format the response message with a link as the title
     response_message = (
         f"Vault: **[{clean_string(name.strip())} ({clean_string(symbol.strip())})]({link})**\n"
         f"Contract: `{vault_address}`\n"
@@ -454,6 +516,7 @@ async def generate_text_report(
         f"APR: `{apr:.2f}%`    APY: `{apy:.2f}%`"
     )
 
+    # Handle optional assets input
     if user_input and len(user_input) == 3:
         try:
             human_readable_assets = float(user_input[2])
@@ -474,6 +537,7 @@ async def generate_text_report(
     return response_message
 
 def get_matching_pps(historical_pps, target_timestamp):
+    # Find the PPS entry with the closest time less than or equal to the target timestamp
     matching_pps = max(
         (pps_entry for pps_entry in historical_pps if pps_entry['time'] <= target_timestamp),
         key=lambda x: x['time'],
@@ -482,7 +546,7 @@ def get_matching_pps(historical_pps, target_timestamp):
     if matching_pps is None:
         print(f"Could not find matching PPS for target timestamp: {target_timestamp}")
         return None
-
+    # print(f"Found matching PPS for timestamp {target_timestamp}: {matching_pps}")
     return matching_pps
 
 async def handle_message(update: Update, context: CallbackContext) -> None:
@@ -490,35 +554,42 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
         user_input = update.message.text.strip().split()
         vault_addresses = [address for address in user_input if Web3.is_address(address)]
 
+        # Check if input contains a block number (like <contract> <block> <assets>)
         if len(vault_addresses) == 1 and len(user_input) > 1 and user_input[1].isdigit():
             block_number = int(user_input[1])
             await update.message.reply_text("🔍 Querying data, please wait...", parse_mode="Markdown")
 
+            # Attempt to find the correct chain by querying each chain
             correct_chain = None
             correct_chain_details = None
 
             for chain_name, provider in chain_providers.items():
                 try:
+                    # Fetch vault details at the specified block
                     price_per_share, name, symbol, decimals, _ = await get_vault_details_rpc(vault_addresses[0], block_number, chain_name)
                     if price_per_share:
                         correct_chain = chain_name
                         correct_chain_details = (price_per_share, name, symbol, decimals)
-                        break  
+                        break  # Stop querying after finding the correct chain
                 except Exception as e:
                     print(f"Failed to query chain {chain_name}: {str(e)}")
                     continue
 
             if not correct_chain:
-                await update.message.reply_text("Error: Could not find the vault on any supported chain.", parse_mode="Markdown", disable_web_page_preview=True)
+                await update.message.reply_text("Error: Could not find the vault on any supported chain.", parse_mode="Markdown")
                 return
 
+            # Unpack the details
             past_price_per_share, name, symbol, decimals = correct_chain_details
 
+            # Fetch the latest block number
             web3 = create_web3_instance(chain_providers[correct_chain], correct_chain)
             latest_block_number = web3.eth.block_number
 
+            # Fetch current pricePerShare at the latest block
             current_price_per_share, _, _, _, _ = await get_vault_details_rpc(vault_addresses[0], latest_block_number, correct_chain)
 
+            # Generate the text report
             response_message = await generate_text_report(
                 vault_addresses[0],
                 earliest_block=block_number,
@@ -536,6 +607,7 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
             await update.message.reply_text(response_message, parse_mode="Markdown", disable_web_page_preview=True)
             return
 
+        # Check if input contains a time range (like 1d, 1w, etc.) after the vault address
         elif len(vault_addresses) == 1 and len(user_input) > 1:
             if user_input[1] in ['1d', '1w', '1m', '3m', '6m']:
                 await update.message.reply_text("🔍 Querying data, please wait...", parse_mode="Markdown")
@@ -559,14 +631,18 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
 
                 current_timestamp = int(datetime.utcnow().timestamp())
 
+                # Attempt to fetch data from Kong API
                 try:
                     chain_id, name, symbol, decimals, v3, api_version, tvl = await fetch_vault_details_kong(vault_addresses[0])
 
+                    # Ensure all required fields are defined
                     if not chain_id or not name or not symbol or decimals is None:
                         raise ValueError("Invalid data returned from Kong API")
 
+                    # Proceed with fetching historical PPS data from Kong
                     historical_pps = await fetch_historical_pricepershare_kong(vault_addresses[0], chain_id)
                     
+                    # Fetch TVL timeseries data from Kong
                     tvl_timeseries = await fetch_tvl_timeseries(chain_id, vault_addresses[0])
 
                     if historical_pps and tvl_timeseries:
@@ -585,6 +661,7 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
                             tvl=tvl
                         )
 
+                        # Send the graph and text report
                         await update.message.reply_photo(photo=InputFile(buffer, filename="graph.png"))
                         buffer.close()
                         await update.message.reply_text(response_message, parse_mode="Markdown", disable_web_page_preview=True)
@@ -594,23 +671,33 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
                     print(f"Kong API failed: {str(e)}")
                     await update.message.reply_text("🔍 Primary query failed. Switching to fallback query. Please wait...", parse_mode="Markdown")
 
+                # If Kong fails completely, fallback to RPC queries
                 correct_chain, correct_chain_details = await query_chain_fallback(vault_addresses[0], current_timestamp)
 
                 if not correct_chain or not correct_chain_details:
                     raise RuntimeError("Could not find the contract on any supported chain.")
 
+                # Now that we have the correct chain, fetch the rest of the data using the RPC path
                 name, symbol, decimals, fetched_chain = correct_chain_details
 
+                # Generate timestamps and sampled dates
                 timestamps, sampled_dates = await generate_timestamps_with_offsets(current_timestamp, days_back, sampling_frequency_days, align_to_utc_midnight=False)
 
+                # Fetch price data
                 timestamp_to_price = await fetch_price_data(timestamps, vault_addresses[0], correct_chain, decimals)
 
+                # Process data for graph and report
                 prices_for_plot, timestamps_for_plot, aprs_for_plot = await process_data_for_apr(sampled_dates, timestamp_to_price, decimals)
 
-                buffer = generate_and_send_graph(prices_for_plot, timestamps_for_plot, aprs_for_plot, name, symbol)
+                # Create a zero-filled tvls_for_plot for fallback
+                tvls_for_plot = [0] * len(timestamps_for_plot)
+
+                # Generate and send the graph
+                buffer = generate_and_send_graph(prices_for_plot, tvls_for_plot, timestamps_for_plot, aprs_for_plot, name, symbol, plot_tvl=False)
                 await update.message.reply_photo(photo=InputFile(buffer, filename="graph.png"))
                 buffer.close()
 
+                # Generate the text report using RPC data
                 if prices_for_plot and timestamps_for_plot:
                     response_message = await generate_text_report(
                         vault_addresses[0],
@@ -630,12 +717,15 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
                     await update.message.reply_text("Error: Not enough data to generate report.", parse_mode="Markdown")
                 return
 
+        # Detect if one or more contract addresses are provided for vault comparison
         if len(vault_addresses) > 0:
             await handle_message_for_vault_comparison(update, context, vault_addresses)
             return
 
+        # Send feedback message before processing the query
         await update.message.reply_text("🔍 Querying data, please wait...", parse_mode="Markdown")
 
+        # Send instructions if the input format is incorrect
         if len(user_input) < 2 or not Web3.is_address(user_input[0]):
             instructions = (
                 "You can interact with the bot using these inputs:\n"
@@ -647,19 +737,22 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
             return
 
     except Exception as e:
-        await update.message.reply_text(f"An unexpected error occurred: {str(e)}", parse_mode="Markdown", disable_web_page_preview=True)
+        await update.message.reply_text(f"An unexpected error occurred: {str(e)}", parse_mode="Markdown")
 
 async def query_chain_fallback(vault_address, current_timestamp):
     correct_chain = None
     correct_chain_details = None
 
     for chain_name, provider in chain_providers.items():
+        # print(f"Attempting to query chain {chain_name}")
 
         try:
+            # Query the block number at the current timestamp
             block_number = get_block_by_timestamp(chain_name, current_timestamp)
-
+            # Get vault details at the block
             price_per_share, name, symbol, decimals, fetched_chain = await get_vault_details_rpc(vault_address, block_number, chain_name)
 
+            # If valid data is found, stop querying further chains
             if price_per_share is not None:
                 correct_chain = chain_name
                 correct_chain_details = (name, symbol, decimals, fetched_chain)
@@ -676,23 +769,26 @@ async def fetch_price_for_timestamp(timestamp, vault_address, correct_chain, dec
     else:
         block_number = get_block_by_timestamp(correct_chain, timestamp)
         if block_number is None:
-            return None  
+            # print(f"Block number is None for timestamp {timestamp} on chain {correct_chain}. Skipping this timestamp.")
+            return None  # Return None to indicate failure for this timestamp
         block_cache[timestamp] = block_number
 
+    # Create a web3 instance
     web3 = create_web3_instance(chain_providers[correct_chain], correct_chain)
 
+    # Fetch the price per share from the cache or RPC call
     if (vault_address, block_number) in price_cache:
         price_per_share = price_cache[(vault_address, block_number)]
     else:
         try:
             price_per_share, _, _, _, _ = await get_vault_details_rpc(vault_address, block_number, correct_chain)
             if price_per_share is None:
-
-                return None  
+                # print(f"Price per share is None for block {block_number} on chain {correct_chain}. Skipping.")
+                return None  # Return None to indicate failure for this timestamp
             price_cache[(vault_address, block_number)] = price_per_share
         except Exception as e:
             print(f"Failed to fetch pricePerShare for block {block_number} on chain {correct_chain}: {str(e)}")
-            return None  
+            return None  # Return None to indicate failure for this timestamp
 
     return price_per_share
 
@@ -706,7 +802,7 @@ async def fetch_price_data_from_correct_chain(timestamps, vault_address, correct
         tasks.append(fetch_price_for_timestamp(timestamp, vault_address, correct_chain, decimals, block_cache, price_cache))
 
     prices_raw = await asyncio.gather(*tasks)
-    return prices_raw  
+    return prices_raw  # This list may contain None values
 
 async def generate_timestamps_with_offsets(current_timestamp, days_back, sampling_frequency_days, align_to_utc_midnight=True):
     if align_to_utc_midnight:
@@ -714,19 +810,26 @@ async def generate_timestamps_with_offsets(current_timestamp, days_back, samplin
     else:
         current_date = datetime.utcfromtimestamp(current_timestamp)
 
+    # Calculate the start date
     start_date = current_date - timedelta(days=days_back)
-    num_samples = (days_back // sampling_frequency_days) + 1  
 
+    # Calculate the number of samples
+    num_samples = (days_back // sampling_frequency_days) + 1  # +1 to include current date
+
+    # Generate sampled dates from earliest to latest
     sampled_dates = [
         start_date + timedelta(days=i * sampling_frequency_days)
         for i in range(num_samples)
     ]
 
+    # Generate dates 7 days earlier for each sampled date
     dates_7_days_earlier = [date - timedelta(days=7) for date in sampled_dates]
 
+    # Combine and remove duplicates
     all_dates = set(sampled_dates + dates_7_days_earlier)
-    all_dates = sorted(all_dates)  
+    all_dates = sorted(all_dates)  # Ensure dates are in chronological order
 
+    # Convert to timestamps
     timestamps = [int(date.timestamp()) for date in all_dates]
 
     return timestamps, sampled_dates
@@ -758,34 +861,54 @@ async def process_data_for_apr(sampled_dates, timestamp_to_price, decimals):
         price_past = timestamp_to_price.get(ts_7_days_earlier)
 
         if price_current is None or price_past is None:
+            # print(f"Missing price data for dates {sampled_date.strftime('%Y-%m-%d')} or {(sampled_date - timedelta(days=7)).strftime('%Y-%m-%d')}. Skipping.")
             continue
 
         price_current_adjusted = price_current / (10 ** decimals)
         price_past_adjusted = price_past / (10 ** decimals)
 
         apr = ((price_current_adjusted - price_past_adjusted) / price_past_adjusted) * (365 / 7) * 100
+
+        # Debug
+        # print(f"Date: {sampled_date.strftime('%Y-%m-%d')}")
+        # print(f"  Current PPS: {price_current_adjusted}")
+        # print(f"  PPS 7 Days Earlier: {price_past_adjusted}")
+        # print(f"  APR: {apr}")
+
         prices_filtered.append(price_current_adjusted)
         timestamps_filtered.append(ts_sampled)
         aprs.append(apr)
 
     return prices_filtered, timestamps_filtered, aprs
 
+
+
+
+
+
+
+
+
 async def handle_message_for_vault_comparison(update: Update, context: CallbackContext, vault_addresses: list) -> None:
     try:
         await update.message.reply_text("🔍 Querying data, please wait...", parse_mode="Markdown")
 
+        # Prepare lists to store APR, APY, and TVL for each vault
         vault_data = []
 
+        # Fetch data for each vault
         for vault_address in vault_addresses:
             chain_id, name, symbol, decimals, v3, api_version, tvl = await fetch_vault_details_kong(vault_address)
 
             if not chain_id or not name or not symbol or decimals is None:
                 raise ValueError(f"Invalid data returned for vault {vault_address}")
 
+            # Fetch historical PPS data for APR calculation
             historical_pps = await fetch_historical_pricepershare_kong(vault_address, chain_id)
             if not historical_pps:
                 raise ValueError(f"No historical PPS data for vault {vault_address}")
 
+            # Calculate APR for 1-day, 7-day, 30-day periods explicitly
             apr_1d = calculate_apr_explicit(historical_pps, decimals, days=1)
             apr_7d = calculate_apr_explicit(historical_pps, decimals, days=7)
             apr_30d = calculate_apr_explicit(historical_pps, decimals, days=30)
@@ -801,10 +924,14 @@ async def handle_message_for_vault_comparison(update: Update, context: CallbackC
                 'chain_id': chain_id 
             })
 
+        # Generate graph for vault comparison
         buffer = generate_grouped_bar_graph(vault_data)
+
+        # Send the graph
         await update.message.reply_photo(photo=InputFile(buffer, filename="vault_comparison.png"))
         buffer.close()
 
+        # Generate and send text report
         response_message = generate_vault_comparison_text_report(vault_data)
         await update.message.reply_text(response_message, parse_mode="Markdown", disable_web_page_preview=True)
 
@@ -812,12 +939,15 @@ async def handle_message_for_vault_comparison(update: Update, context: CallbackC
         await update.message.reply_text(f"An unexpected error occurred while processing multiple vaults: {str(e)}", parse_mode="Markdown")
 
 def calculate_apr_explicit(timeseries, decimals, days):
+    # Convert timestamps to integers
     for entry in timeseries:
         entry['time'] = int(entry['time'])
 
+    # Get the current timestamp and calculate the target timestamp
     current_timestamp = timeseries[-1]['time']
     target_timestamp = current_timestamp - (days * 24 * 60 * 60)
 
+    # Find the closest past timestamp (approximate match)
     past_data = min(timeseries, key=lambda x: abs(x['time'] - target_timestamp))
     current_pps = timeseries[-1]['value']
     past_pps = past_data['value']
@@ -825,32 +955,37 @@ def calculate_apr_explicit(timeseries, decimals, days):
     if past_pps == 0:
         return 0
 
+    # Calculate APR for the given time period
     apr = ((current_pps - past_pps) / past_pps) * (365 / days) * 100
     return apr
 
 def generate_grouped_bar_graph(vault_data):
+    # Ensure vault_data is always a list
     if not isinstance(vault_data, list):
         vault_data = [vault_data]
 
-    # Vault data
+    # Vault data unpacking
     vault_labels = [data['symbol'] for data in vault_data]
     apr_1d = [data['apr_1d'] for data in vault_data]
     apr_7d = [data['apr_7d'] for data in vault_data]
     apr_30d = [data['apr_30d'] for data in vault_data]
     tvls = [data['tvl'] for data in vault_data]
 
+    # Graph details
     x = np.arange(len(vault_labels))
     width = 0.2
 
+    # Create plot
     fig, ax1 = plt.subplots(figsize=(12, 8))
 
+    # Determine the appropriate TVL label based on max value
     max_tvl = max(tvls)
     if max_tvl >= 1e6:
         tvl_label = "TVL (Million USD)"
-        tvls = [tvl / 1e6 for tvl in tvls]
+        tvls = [tvl / 1e6 for tvl in tvls]  # Convert values to millions for the y-axis
     else:
         tvl_label = "TVL (Thousand USD)"
-        tvls = [tvl / 1e3 for tvl in tvls]
+        tvls = [tvl / 1e3 for tvl in tvls]  # Convert values to thousands for the y-axis
 
     # Plotting bars
     bars1 = ax1.bar(x - 1.5 * width, apr_1d, width, label='1-Day APR', color='darkgreen', alpha=0.4)
@@ -860,24 +995,26 @@ def generate_grouped_bar_graph(vault_data):
     ax2.yaxis.set_major_formatter(ScalarFormatter())
     ax2.get_yaxis().get_offset_text().set_visible(False)
     bars4 = ax2.bar(x + 1.5 * width, tvls, width, label='TVL', color='darkslategray', alpha=0.7)
-    
+
+    # Use linear scale for both y-axes
     ax1.set_yscale('linear')
     ax2.set_yscale('linear')
 
-    # Prevent scientific notation
+    # Apply formatters for y-axes to prevent scientific notation
     ax1.yaxis.set_major_formatter(ScalarFormatter(useOffset=False))
     ax1.yaxis.get_major_formatter().set_scientific(False)
     ax2.yaxis.set_major_formatter(ScalarFormatter(useOffset=False))
     ax2.yaxis.get_major_formatter().set_scientific(False)
 
-    # In case ScalarFormatter doesn't fully apply
+    # Use FuncFormatter to set y-axis labels to regular numbers, in case ScalarFormatter doesn't fully apply
     ax1.yaxis.set_major_formatter(FuncFormatter(lambda x, _: f'{int(x):,}'))
     ax2.yaxis.set_major_formatter(FuncFormatter(lambda x, _: f'{int(x):,}'))
 
     # Limit the number of ticks on the TVL axis to avoid clutter
     ax2.yaxis.set_major_locator(MaxNLocator(nbins=6, prune='both'))
+    ax1.yaxis.set_major_locator(MaxNLocator(nbins=6, prune='both'))
 
-    # Label
+    # Labeling
     ax1.set_xlabel('Vault', fontsize=18)
     ax1.set_ylabel('APR (%)', fontsize=18, color='darkgreen')
     ax2.set_ylabel(tvl_label, fontsize=18, color='darkslategray')
@@ -901,6 +1038,7 @@ def generate_grouped_bar_graph(vault_data):
         label = f"${tvl:.2f}M" if max_tvl >= 1e6 else f"${tvl:.2f}K"
         ax2.text(bar.get_x() + bar.get_width() / 2, bar.get_height(), label, ha='center', va='bottom', fontsize=8, color='black')
 
+    # Save the graph to buffer
     buffer = BytesIO()
     plt.subplots_adjust(left=0.125, right=0.875, top=0.875, bottom=0.125)
     plt.savefig(buffer, format='png', dpi=150)
@@ -922,6 +1060,7 @@ def generate_vault_comparison_text_report(vault_data):
         thirty_day_apr = vault.get('apr_30d', 0)
         tvl = vault.get('tvl', 0)
 
+        # Markdown formatted version with links
         link = f"https://yearn.fi/v3/{chain_id}/{address}"
         response_message += (
             f"\nVault: **[{name} ({symbol})]({link})**\n"
@@ -932,6 +1071,22 @@ def generate_vault_comparison_text_report(vault_data):
 
     return response_message
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Fetch all vaults from Kong
 async def fetch_all_vaults_kong():
     url = "https://kong.yearn.farm/api/gql"
     query = """
@@ -966,6 +1121,7 @@ async def fetch_all_vaults_kong():
         print(f"Exception while fetching data from Kong: {str(e)}")
         return None
 
+# Retry timeseries data fetching
 async def fetch_with_retries(vault, retries=3):
     for attempt in range(retries):
         try:
@@ -973,19 +1129,21 @@ async def fetch_with_retries(vault, retries=3):
                 # print(f"Fetching timeseries for vault: {vault['address']}")
                 timeseries = await fetch_historical_pricepershare_kong(vault['address'], vault['chainId'])
                 if timeseries is not None:
+                    # Convert time from string to integer for all timeseries entries
                     for entry in timeseries:
                         entry['time'] = int(entry['time'])
                     return timeseries
         except Exception as e:
             print(f"Error fetching timeseries for vault {vault.get('address', 'Unknown')}: {e}")
-        await asyncio.sleep(2 ** attempt)
+        await asyncio.sleep(2 ** attempt)  # Exponential backoff
     return None
 
+# Calculate APR from timeseries data
 def calculate_apr(timeseries):
     if len(timeseries) < 7:
         print("Not enough timeseries data to calculate APR")
         return 0
-    past_pps = timeseries[-7]['value']
+    past_pps = timeseries[-7]['value']  # Get the value 7 days ago
     current_pps = timeseries[-1]['value']
     if past_pps == 0:
         # print("Past PPS is zero, cannot calculate APR")
@@ -993,6 +1151,7 @@ def calculate_apr(timeseries):
     apr = ((current_pps - past_pps) / past_pps) * (365 / 7) * 100
     return apr
 
+# Interpolate APY from APR
 def interpolate_apy(apr):
     if apr == 0:
         return 0
@@ -1012,8 +1171,9 @@ async def daily_apr_report(context: CallbackContext = None, chat_id: int = None)
 
     try:
         print("Starting daily APR report generation")
+        # Step 1: Fetch all vaults
         vaults = None
-        MIN_TVL = 10000
+        MIN_TVL = 10000  # Minimum TVL threshold for vault inclusion
         for attempt in range(5):
             try:
                 vaults = await fetch_all_vaults_kong()
@@ -1021,7 +1181,7 @@ async def daily_apr_report(context: CallbackContext = None, chat_id: int = None)
                     break
             except Exception as e:
                 print(f"Error fetching vault details from Kong (attempt {attempt + 1}): {e}")
-            await asyncio.sleep(2 ** attempt)
+            await asyncio.sleep(2 ** attempt)  # Exponential backoff
 
         if not vaults:
             print("No vaults found or vaults response is None")
@@ -1033,7 +1193,7 @@ async def daily_apr_report(context: CallbackContext = None, chat_id: int = None)
         for vault in vaults:
             if vault and 'address' in vault and 'decimals' in vault:
                 try:
-                    vault['decimals'] = int(vault['decimals'])
+                    vault['decimals'] = int(vault['decimals'])  # Convert decimals from BigInt to integer
                     tvl = vault['tvl']['close'] if 'tvl' in vault and vault['tvl'] and 'close' in vault['tvl'] else 0
                     if tvl >= MIN_TVL:
                         valid_vaults.append(vault)
@@ -1042,18 +1202,21 @@ async def daily_apr_report(context: CallbackContext = None, chat_id: int = None)
 
         total_vaults = len(valid_vaults)
 
+        # Step 2: Process timeseries data for each vault in batches
         batch_size = 2000
         apr_data = []
-        timeseries_data = {}
+        timeseries_data = {}  # Dictionary to store timeseries data for reuse
         for i in range(0, len(valid_vaults), batch_size):
             batch = valid_vaults[i:i + batch_size]
             tasks = [fetch_with_retries(vault) for vault in batch]
             batch_results = await asyncio.gather(*tasks)
 
+            # Step 3: Store timeseries data for reuse and calculate APR for each vault in the batch
             for vault, timeseries in zip(batch, batch_results):
                 if timeseries is not None:
-                    timeseries_data[vault['address']] = timeseries
+                    timeseries_data[vault['address']] = timeseries  # Store timeseries data
 
+                    # Calculate 7-day APR
                     if len(timeseries) >= 7:
                         past_pps = timeseries[-7]['value']
                         current_pps = timeseries[-1]['value']
@@ -1064,6 +1227,7 @@ async def daily_apr_report(context: CallbackContext = None, chat_id: int = None)
                     else:
                         apr = 0
 
+                    # Calculate 1-day APR
                     if len(timeseries) >= 2:
                         latest_pps = timeseries[-1]['value']
                         pps_1_day_ago = timeseries[-2]['value']
@@ -1072,7 +1236,7 @@ async def daily_apr_report(context: CallbackContext = None, chat_id: int = None)
                         else:
                             apr_1_day = 0
                     else:
-                        apr_1_day = 0
+                        apr_1_day = 0  # Not enough data to calculate 1-day APR
 
                     apy = interpolate_apy(apr)
                     apr_data.append({
@@ -1084,8 +1248,10 @@ async def daily_apr_report(context: CallbackContext = None, chat_id: int = None)
                 else:
                     print(f"Failed to fetch timeseries for vault: {vault['address']}")
 
-            await asyncio.sleep(1)
+            # Step 4: Send progress report after each batch
+            await asyncio.sleep(1)  # 1-second delay between batches
 
+        # Step 5: Sort and get top 15 APR vaults
         if not apr_data:
             print("No APR data available after processing all batches.")
             if context and chat_id:
@@ -1094,6 +1260,7 @@ async def daily_apr_report(context: CallbackContext = None, chat_id: int = None)
 
         top_15_vaults = sorted(apr_data, key=lambda x: x['apr'], reverse=True)[:15]
 
+        # Step 6: Format the Telegram report
         message = "Top 15 Vaults by 7-Day APR:\n"
         for idx, vault_data in enumerate(top_15_vaults, start=1):
             vault = vault_data['vault']
@@ -1108,18 +1275,23 @@ async def daily_apr_report(context: CallbackContext = None, chat_id: int = None)
                         f"   📊 7-Day APR: `{apr:.2f}%` | APY: `{apy:.2f}%`\n"
                         f"   📊 1-Day APR: `{apr_1_day:.2f}%`\n\n")
 
+        # Step 7: Send the message to your chat ID
         if context and chat_id:
             await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown', disable_web_page_preview=True)
 
+        # Step 8: Call PPS Reduction Check using the same timeseries data
         await check_pps_reduction(context=context, chat_id=chat_id, timeseries_data=timeseries_data)
 
+        # Step 9: Call Top Gainers and Losers report using the same timeseries data
         await top_gainers_losers_report(context=context, chat_id=chat_id, timeseries_data=timeseries_data, valid_vaults=valid_vaults if valid_vaults else [])
 
+        # Step 10: Clear timeseries data after use
         timeseries_data.clear()
 
     except Exception as e:
         print(f"Error generating daily APR report: {e}")
 
+# Check PPS reduction (anomalies report)
 async def check_pps_reduction(context: CallbackContext = None, chat_id: int = None, timeseries_data: dict = None):
     try:
         print("Starting PPS reduction check (anomalies report)")
@@ -1162,6 +1334,7 @@ async def check_pps_reduction(context: CallbackContext = None, chat_id: int = No
     except Exception as e:
         print(f"Error generating PPS reduction report: {e}")
 
+# Generate Top Gainers and Losers Report
 async def top_gainers_losers_report(context: CallbackContext = None, chat_id: int = None, timeseries_data: dict = None, valid_vaults: list = None):
     try:
         print("Starting Top Gainers and Losers Report")
@@ -1180,17 +1353,17 @@ async def top_gainers_losers_report(context: CallbackContext = None, chat_id: in
         apr_changes = []
         for vault_address, timeseries in timeseries_data.items():
             if timeseries and len(timeseries) >= 8:
-                # Step 1: Calculate today's APR
+                # Calculate today's APR
                 latest_pps = timeseries[-1]['value']
                 pps_7_days_ago = timeseries[-8]['value']
                 apr_today = calculate_apr_from_pps(latest_pps, pps_7_days_ago)
 
-                # Step 2: Calculate yesterday's APR
+                # Calculate yesterday's APR
                 pps_yesterday = timeseries[-2]['value']
                 pps_7_days_before_yesterday = timeseries[-9]['value']
                 apr_yesterday = calculate_apr_from_pps(pps_yesterday, pps_7_days_before_yesterday)
 
-                # Step 3: Calculate APR change
+                # Calculate APR change
                 apr_change = apr_today - apr_yesterday
                 apy_today = interpolate_apy(apr_today)
                 apr_changes.append({
@@ -1201,11 +1374,11 @@ async def top_gainers_losers_report(context: CallbackContext = None, chat_id: in
                     'apr_yesterday': apr_yesterday
                 })
 
-        # Step 4: Sort APR changes
+        # Sort APR changes
         top_gainers = sorted(apr_changes, key=lambda x: x['apr_change'], reverse=True)[:5]
         top_losers = sorted(apr_changes, key=lambda x: x['apr_change'])[:5]
 
-        # Step 5: Format the Telegram report for gainers and losers
+        # Format the Telegram report for gainers and losers
         message = "🟢 Top 5 7-day APR Gainers:\n"
         for idx, vault_data in enumerate(top_gainers, start=1):
             vault_address = vault_data['vault_address']
@@ -1213,8 +1386,8 @@ async def top_gainers_losers_report(context: CallbackContext = None, chat_id: in
             chain_id = vault_info['chainId']
             name = vault_info['name']
             symbol = vault_info['symbol']
-            link = f"https://yearn.fi/v3/{chain_id}/{vault_address}"
             tvl = vault_info['tvl']['close'] if 'tvl' in vault_info and vault_info['tvl'] and 'close' in vault_info['tvl'] else 0
+            link = f"https://yearn.fi/v3/{chain_id}/{vault_address}"
             message += (f"{idx}. **[{clean_string(name)}]({link})**\n"
                        f"   📋 Address: `{vault_address}`\n"
                        f"   🔼 APR Change: `{vault_data['apr_change']:.2f}%`\n"
@@ -1238,7 +1411,7 @@ async def top_gainers_losers_report(context: CallbackContext = None, chat_id: in
                        f"   📊 APR Today: `{vault_data['apr_today']:.2f}%` | APY: `{vault_data['apy_today']:.2f}%`\n"
                        f"   📉 APR Yesterday: `{vault_data['apr_yesterday']:.2f}%` | APY Yesterday: `{interpolate_apy(vault_data['apr_yesterday']):.2f}%`\n\n")
 
-        # Step 6: Send the report to your chat ID
+        # Send the report to your chat ID
         if context and chat_id:
             await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown', disable_web_page_preview=True)
     except Exception as e:
